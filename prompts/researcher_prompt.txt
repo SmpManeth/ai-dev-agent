@@ -12,5 +12,7 @@ Produce:
 1. suspected_root_cause — The most likely explanation with reference to specific code
 2. evidence — Bullet-style observations quoting file paths and behavior
 3. recommended_fix — A clear description of what should change (which files, what logic), without actual code edits
+4. confidence — Integer 0-100: how confident you are in the root cause and recommended fix given the files read
 
-If evidence is insufficient, state what is missing and give your best hypothesis.
+If evidence is insufficient, state what is missing, lower confidence accordingly, and give your best hypothesis.
+Do not propose patches, diffs, or edited file contents.

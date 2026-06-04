@@ -109,7 +109,7 @@ class ResearcherAgent:
 ## Additional search context
 {search_extra or "(none)"}
 
-Respond with JSON: suspected_root_cause, evidence, recommended_fix.
+Respond with JSON: suspected_root_cause, evidence, recommended_fix, confidence (0-100).
 """
 
         llm = self._build_llm()

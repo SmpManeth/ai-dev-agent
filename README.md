@@ -26,6 +26,8 @@ START → Planner → Researcher → END
 
 No file writes, patches, commits, or test execution in this phase.
 
+Step 1 prints a plain-text **AI CODING AGENT REPORT** with task context, files investigated, root cause, recommended fix, confidence, and status `READY FOR PATCH GENERATION` when analysis is strong enough to proceed to patching (a future phase).
+
 ## Environment
 
 | Variable | Default | Description |

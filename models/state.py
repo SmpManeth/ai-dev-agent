@@ -32,6 +32,12 @@ class ResearchResult(BaseModel):
     recommended_fix: str = Field(
         description="Concrete fix recommendation (no file writes yet)"
     )
+    confidence: int = Field(
+        default=70,
+        ge=0,
+        le=100,
+        description="Confidence (0-100) that the root cause and fix are correct",
+    )
 
 
 class ProposedChange(BaseModel):
@@ -59,6 +65,7 @@ class AgentState(BaseModel):
 
     # Enriched artifacts
     repo_summary: str = ""
+    repo_summary_display: str = ""
     planner_result: PlannerResult | None = None
     research_result: ResearchResult | None = None
     understanding: str = ""
@@ -85,6 +92,7 @@ class GraphState(TypedDict, total=False):
     proposed_changes: list[dict[str, str]]
     current_step: str
     repo_summary: str
+    repo_summary_display: str
     planner_result: dict[str, Any] | None
     research_result: dict[str, Any] | None
     understanding: str

@@ -12,6 +12,7 @@ from config import get_settings, load_prompt
 from models.state import AgentState, PlannerResult
 from tools.file_tool import FileTool
 from tools.git_tool import GitTool
+from tools.repo_profile import build_display_repo_summary
 from tools.search_tool import SearchTool
 
 
@@ -74,7 +75,7 @@ class PlannerAgent:
             temperature=0.1,
         )
 
-    def _gather_context(self, task: str) -> tuple[str, list[str], str]:
+    def _gather_context(self, task: str) -> tuple[str, str, list[str], str]:
         """Collect git summary, file listing, and search hits."""
         summary = self._git_tool.get_repo_summary()
         repo_summary_text = summary.to_text()
@@ -97,12 +98,20 @@ class PlannerAgent:
                 )
         search_text = "\n\n".join(search_sections) if search_sections else "(no keyword hits)"
 
-        return repo_summary_text, all_files, file_list_text + "\n\n" + search_text
+        display_summary = build_display_repo_summary(
+            self.repo_path, summary, all_files
+        )
+        return (
+            repo_summary_text,
+            display_summary,
+            all_files,
+            file_list_text + "\n\n" + search_text,
+        )
 
     def run(self, state: AgentState) -> dict[str, Any]:
         """Execute planner logic and return state updates."""
-        repo_summary_text, all_files, search_context = self._gather_context(
-            state.task_description
+        repo_summary_text, display_summary, all_files, search_context = (
+            self._gather_context(state.task_description)
         )
 
         system = load_prompt("planner_prompt.txt")
@@ -154,6 +163,7 @@ Respond with JSON matching the schema: understanding, files_to_investigate, plan
         return {
             "current_step": "planned",
             "repo_summary": repo_summary_text,
+            "repo_summary_display": display_summary,
             "files_found": all_files,
             "planner_result": result.model_dump(),
             "understanding": result.understanding,
