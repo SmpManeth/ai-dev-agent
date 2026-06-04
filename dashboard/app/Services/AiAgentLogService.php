@@ -55,7 +55,7 @@ class AiAgentLogService
         return $text;
     }
 
-    private function sanitizeContext(array $context): array
+    public function sanitizeContext(array $context): array
     {
         $out = [];
         foreach ($context as $key => $value) {

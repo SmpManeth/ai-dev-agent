@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from tools.patch_align import realign_diff_to_files
 from tools.patch_guard import extract_diff_paths
 
 _HUNK_SHORT = re.compile(r"^@@\s+-(\d+)\s+\+(\d+)\s*@@?$")
@@ -173,22 +174,25 @@ def repair_diff_if_needed(diff: str, files_read: dict[str, str]) -> str:
             added.append(line[1:])
 
     paths = extract_diff_paths(normalized)
-    if len(paths) == 1 and len(removed) == len(added) and removed:
+    if len(paths) == 1 and removed and added:
         path = paths[0]
         content = files_read.get(path, "")
-        if all(old in content for old in removed):
-            # Rebuild clean hunks with correct line numbers
-            parts = [f"--- {path}", f"+++ {path}"]
-            for old, new in zip(removed, added, strict=True):
-                idx = content.find(old)
-                if idx == -1:
-                    continue
-                line_no = content[:idx].count("\n") + 1
-                parts.append(f"@@ -{line_no},1 +{line_no},1 @@")
-                parts.append(f"-{old}")
-                parts.append(f"+{new}")
-            if len(parts) > 2:
-                return "\n".join(parts) + "\n"
+        if content:
+            if len(removed) == len(added) and all(old in content for old in removed):
+                parts = [f"--- {path}", f"+++ {path}"]
+                for old, new in zip(removed, added, strict=True):
+                    idx = content.find(old)
+                    if idx == -1:
+                        continue
+                    line_no = content[:idx].count("\n") + 1
+                    parts.append(f"@@ -{line_no},1 +{line_no},1 @@")
+                    parts.append(f"-{old}")
+                    parts.append(f"+{new}")
+                if len(parts) > 2:
+                    return "\n".join(parts) + "\n"
+            realigned = realign_diff_to_files(normalized, files_read)
+            if realigned != normalized:
+                return realigned
 
     return normalized
 

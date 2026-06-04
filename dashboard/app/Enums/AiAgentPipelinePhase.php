@@ -13,6 +13,7 @@ enum AiAgentPipelinePhase: string
     case ValidatingPatch = 'validating_patch';
     case ApplyingPatch = 'applying_patch';
     case RunningTests = 'running_tests';
+    case VerifyingFix = 'verifying_fix';
     case SelfFixing = 'self_fixing';
     case Committing = 'committing';
     case Pushing = 'pushing';
@@ -35,6 +36,7 @@ enum AiAgentPipelinePhase: string
             self::ValidatingPatch => 'Validating patch',
             self::ApplyingPatch => 'Applying patch',
             self::RunningTests => 'Running tests',
+            self::VerifyingFix => 'Verifying fix',
             self::SelfFixing => 'Self-fixing',
             self::Committing => 'Committing changes',
             self::Pushing => 'Pushing to GitHub',
@@ -92,6 +94,8 @@ enum AiAgentPipelinePhase: string
             ['phase' => self::GeneratingPatch->value, 'label' => 'Patch'],
             ['phase' => self::ApplyingPatch->value, 'label' => 'Apply'],
             ['phase' => self::RunningTests->value, 'label' => 'Test'],
+            ['phase' => self::VerifyingFix->value, 'label' => 'Verify'],
+            ['phase' => self::SelfFixing->value, 'label' => 'Retry'],
             ['phase' => self::Committing->value, 'label' => 'Commit'],
             ['phase' => self::CreatingPr->value, 'label' => 'PR'],
             ['phase' => self::UpdatingJira->value, 'label' => 'Jira'],

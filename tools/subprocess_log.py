@@ -11,6 +11,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tools.agent_console import console, log_detail
+from tools.audit_log import audit_command
+from tools.command_guard import assert_command_allowed
+from tools.security_policy import SecurityViolation
+from tools.secret_mask import mask_secrets
+from tools.security_policy import max_runtime_seconds
 
 
 @dataclass(frozen=True)
@@ -40,7 +45,7 @@ def _format_argv(argv: Sequence[str]) -> str:
 
 
 def _print_stream_line(line: str, *, prefix: str = "    │ ") -> None:
-    text = line.rstrip("\n\r")
+    text = mask_secrets(line.rstrip("\n\r"))
     if not text:
         return
     if len(text) > 240:
@@ -56,6 +61,8 @@ def run_logged(
     env: dict[str, str] | None = None,
     stream: bool | None = None,
     echo_command: bool = True,
+    task_key: str = "",
+    skip_command_guard: bool = False,
 ) -> LoggedProcessResult:
     """
     Run a command; optionally stream merged stdout/stderr to the terminal.
@@ -63,6 +70,17 @@ def run_logged(
     Full output is still captured and returned for validation records.
     """
     argv_list = [str(a) for a in argv]
+    if not skip_command_guard:
+        try:
+            assert_command_allowed(argv_list)
+            audit_command(argv_list, task_key=task_key, allowed=True)
+        except SecurityViolation as exc:
+            audit_command(argv_list, task_key=task_key, allowed=False)
+            raise
+
+    if timeout is None:
+        timeout = max_runtime_seconds()
+
     if echo_command:
         log_detail(f"  $ {_format_argv(argv_list)}")
 
@@ -77,8 +95,8 @@ def run_logged(
             check=False,
             env=env,
         )
-        out = completed.stdout or ""
-        err = completed.stderr or ""
+        out = mask_secrets(completed.stdout or "")
+        err = mask_secrets(completed.stderr or "")
         if completed.returncode != 0 and (out or err):
             _print_failure_tail(out, err)
         return LoggedProcessResult(
@@ -122,7 +140,7 @@ def run_logged(
             _print_stream_line(line)
 
     code = proc.wait()
-    combined = "\n".join(lines)
+    combined = mask_secrets("\n".join(lines))
     if code != 0:
         _print_failure_tail(combined, "")
 

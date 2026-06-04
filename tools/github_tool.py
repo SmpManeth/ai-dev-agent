@@ -159,15 +159,108 @@ def find_open_pr_for_branch(
     return None
 
 
+def is_replaceable_agent_branch(branch_name: str) -> bool:
+    """Agent-owned branches may be rewritten each Jira run (fresh commit from base)."""
+    normalized = branch_name.strip().lower()
+    return normalized.startswith("ai-fix/") or normalized.startswith("agent/")
+
+
+def _push_non_fast_forward(err: str) -> bool:
+    lower = err.lower()
+    return (
+        "non-fast-forward" in lower
+        or "stale info" in lower
+        or ("rejected" in lower and "failed to push" in lower)
+    )
+
+
+def _remote_lease_ref(branch_name: str) -> str:
+    """Local ref updated by fetch; used as --force-with-lease expected tip."""
+    safe = branch_name.replace("\\", "/").strip("/")
+    return f"refs/remotes/ai-agent-push-lease/{safe}"
+
+
+def _push_agent_branch_over_remote(
+    git_root: Path,
+    push_url: str,
+    branch_name: str,
+    *,
+    initial_err: str,
+) -> None:
+    """
+    Replace a diverged ai-fix/* remote branch with the current local commit.
+
+    1. Fetch remote tip into a dedicated lease ref
+    2. --force-with-lease against that ref
+    3. If lease still fails (stale info), --force (agent-owned branch only)
+    """
+    lease_ref = _remote_lease_ref(branch_name)
+    refspec = f"+refs/heads/{branch_name}:{lease_ref}"
+
+    log_detail(
+        "  Remote branch diverged (prior agent run); syncing remote tip for safe push…"
+    )
+    fetch = run_logged(
+        ["git", "-C", str(git_root), "fetch", push_url, refspec],
+        timeout=120,
+        echo_command=False,
+    )
+    if fetch.returncode != 0:
+        fetch_err = fetch.stderr.strip() or fetch.stdout.strip()
+        raise RuntimeError(
+            f"git push failed: {initial_err}\n(fetch remote branch failed: {fetch_err})"
+        )
+
+    log_detail(f"  $ git push --force-with-lease={lease_ref} origin {branch_name}")
+    lease = run_logged(
+        [
+            "git",
+            "-C",
+            str(git_root),
+            "push",
+            f"--force-with-lease={lease_ref}",
+            push_url,
+            f"refs/heads/{branch_name}:refs/heads/{branch_name}",
+        ],
+        timeout=600,
+        echo_command=False,
+    )
+    if lease.returncode == 0:
+        return
+
+    lease_err = lease.stderr.strip() or lease.stdout.strip()
+    log_detail(
+        "  force-with-lease failed; using --force on ai-fix branch (replacing prior agent run)…"
+    )
+    forced = run_logged(
+        ["git", "-C", str(git_root), "push", "--force", push_url, branch_name],
+        timeout=600,
+        echo_command=False,
+    )
+    if forced.returncode == 0:
+        return
+
+    force_err = forced.stderr.strip() or forced.stdout.strip()
+    raise RuntimeError(
+        f"git push failed: {initial_err}\n"
+        f"(force-with-lease: {lease_err})\n"
+        f"(force: {force_err})"
+    )
+
+
 def push_branch(
     repo_path: str | Path,
     branch_name: str,
     token: str,
     *,
     settings: Settings | None = None,
+    allow_agent_force_lease: bool = True,
 ) -> str:
     """
     Push branch to GitHub origin using token authentication.
+
+    When the remote already has an older ai-fix/* branch (previous agent run),
+    fetches and retries with --force-with-lease so the open PR updates safely.
 
     Returns the push remote URL (token redacted in logs externally).
     """
@@ -185,11 +278,24 @@ def push_branch(
         timeout=600,
         echo_command=False,
     )
-    if result.returncode != 0:
-        err = result.stderr.strip() or result.stdout.strip()
-        raise RuntimeError(f"git push failed: {err}")
+    if result.returncode == 0:
+        return f"https://github.com/{target.owner}/{target.repo}.git"
 
-    return f"https://github.com/{target.owner}/{target.repo}.git"
+    err = result.stderr.strip() or result.stdout.strip()
+    if (
+        allow_agent_force_lease
+        and is_replaceable_agent_branch(branch_name)
+        and _push_non_fast_forward(err)
+    ):
+        _push_agent_branch_over_remote(
+            git_root,
+            push_url,
+            branch_name,
+            initial_err=err,
+        )
+        return f"https://github.com/{target.owner}/{target.repo}.git"
+
+    raise RuntimeError(f"git push failed: {err}")
 
 
 def create_draft_pr(

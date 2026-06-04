@@ -201,7 +201,19 @@ def run_batch_from_jira(
     picks up the following issue. On failure, logs/comments and continues only
     when max_tasks > 1.
     """
+    from tools.audit_log import append_audit_event
+    from tools.security_policy import (
+        assert_agent_enabled,
+        assert_repo_allowed,
+        assert_repo_path_allowed,
+    )
+
+    assert_agent_enabled()
     settings = settings or get_settings()
+    if settings.github_owner and settings.github_repo:
+        assert_repo_allowed(settings.github_owner, settings.github_repo)
+    assert_repo_path_allowed(repo_path)
+    append_audit_event("batch_start", detail=str(repo_path))
     base_branch = (settings.github_base_branch or "main").strip() or "main"
 
     if settings.auto_sync_repo and not skip_repo_sync:

@@ -20,6 +20,7 @@ class PipelinePhase(str, Enum):
     VALIDATING_PATCH = "validating_patch"
     APPLYING_PATCH = "applying_patch"
     RUNNING_TESTS = "running_tests"
+    VERIFYING_FIX = "verifying_fix"
     SELF_FIXING = "self_fixing"
     COMMITTING = "committing"
     PUSHING = "pushing"
@@ -42,6 +43,7 @@ PHASE_LABELS: dict[PipelinePhase, str] = {
     PipelinePhase.APPLYING_PATCH: "Applying patch to workspace",
     PipelinePhase.RUNNING_TESTS: "Running validation tests",
     PipelinePhase.SELF_FIXING: "Self-fixing after test failure",
+    PipelinePhase.VERIFYING_FIX: "Verifying fix matches bug report",
     PipelinePhase.COMMITTING: "Creating branch and commit",
     PipelinePhase.PUSHING: "Pushing branch to GitHub",
     PipelinePhase.CREATING_PR: "Opening draft pull request",
@@ -58,13 +60,14 @@ NODE_PHASES: dict[str, tuple[PipelinePhase, int]] = {
     "patcher": (PipelinePhase.GENERATING_PATCH, 3),
     "patch_applier": (PipelinePhase.APPLYING_PATCH, 4),
     "test_runner": (PipelinePhase.RUNNING_TESTS, 5),
-    "self_fix": (PipelinePhase.SELF_FIXING, 6),
-    "git_committer": (PipelinePhase.COMMITTING, 7),
-    "github_pr": (PipelinePhase.CREATING_PR, 8),
-    "jira_updater": (PipelinePhase.UPDATING_JIRA, 9),
+    "fix_verifier": (PipelinePhase.VERIFYING_FIX, 6),
+    "self_fix": (PipelinePhase.SELF_FIXING, 7),
+    "git_committer": (PipelinePhase.COMMITTING, 8),
+    "github_pr": (PipelinePhase.CREATING_PR, 9),
+    "jira_updater": (PipelinePhase.UPDATING_JIRA, 10),
 }
 
-STEP_TOTAL = 9
+STEP_TOTAL = 10
 
 
 def progress_path_for_issue(progress_dir: str | Path, issue_key: str) -> Path:

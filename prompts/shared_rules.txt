@@ -1,0 +1,20 @@
+SHARED RULES (all agents — mandatory):
+
+Evidence discipline
+- Only cite files, classes, functions, DOM ids, and CSS classes that appear in the inputs you were given.
+- Never invent identifiers (e.g. discoverWorldCruiseSlider) to "fix" a symptom.
+- If you cannot point to exact source code, say what is missing and stop — do not guess.
+
+Laravel / Blade / frontend
+- Visible page text (headings, labels) lives in resources/views/**/*.blade.php — search there first.
+- Page-specific UI bugs are fixed in the Blade (or its inline <script>), not by defaulting to resources/js/app.js.
+- If a Blade file contains Swiper (class swiper, new Swiper), Alpine (x-data, x-ref), or inline <script> init, extend THAT mechanism — do not add parallel scroll/autoplay logic in app.js.
+- Match patterns used elsewhere in the repo (e.g. holiday.blade.php autoplay config) before inventing new APIs.
+
+Patches
+- Smallest change that fixes the reported symptom only.
+- Do not refactor, reformat, or "improve" unrelated code.
+- A passing build or syntax check does not prove the bug is fixed.
+
+When uncertain
+- Lower confidence and request the correct file — empty diff is better than a wrong diff.

@@ -16,10 +16,15 @@ class AiAgentProcessService
         private readonly AiAgentRepositoryService $repositoryService,
         private readonly AiAgentPipelineSyncService $pipelineSync,
         private readonly AiAgentJobTracker $jobTracker,
+        private readonly AiAgentHardeningService $hardeningService,
     ) {}
 
     public function run(AiAgentTask $task, ?bool $createPr = null, bool $background = true): int
     {
+        if (! $this->hardeningService->isAgentEnabled()) {
+            throw new \RuntimeException('AI agent is disabled (kill switch).');
+        }
+
         if (! $task->canRun()) {
             throw new \RuntimeException('Task cannot be run in its current state.');
         }
@@ -79,15 +84,18 @@ class AiAgentProcessService
         $logFile = storage_path("logs/agent-task-{$task->id}.log");
 
         if (! $background) {
-            return $this->runForeground($task, $command, $summaryPath, $logFile);
+            return $this->runForeground($task, $command, $summaryPath, $logFile, $createPr);
         }
 
         $process = new Process(
             $command,
             config('ai_agent.project_path'),
+            $this->buildAgentEnvironment($task, $createPr),
             null,
-            null,
-            null,
+            min(
+                config('ai_agent.default_timeout'),
+                ($this->hardeningService->current()['max_runtime_minutes'] ?? 120) * 60,
+            ),
         );
         $process->start();
 
@@ -106,14 +114,22 @@ class AiAgentProcessService
     /**
      * @param  list<string>  $command
      */
-    private function runForeground(AiAgentTask $task, array $command, string $summaryPath, string $logFile): int
-    {
+    private function runForeground(
+        AiAgentTask $task,
+        array $command,
+        string $summaryPath,
+        string $logFile,
+        bool $createPr,
+    ): int {
         $process = new Process(
             $command,
             config('ai_agent.project_path'),
+            $this->buildAgentEnvironment($task, $createPr),
             null,
-            null,
-            config('ai_agent.default_timeout'),
+            min(
+                config('ai_agent.default_timeout'),
+                ($this->hardeningService->current()['max_runtime_minutes'] ?? 120) * 60,
+            ),
         );
 
         $process->run(function (string $type, string $buffer) use ($task) {
@@ -291,5 +307,27 @@ class AiAgentProcessService
     private function redactCommand(array $command): array
     {
         return array_map(fn ($part) => $this->logService->sanitize($part), $command);
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function buildAgentEnvironment(AiAgentTask $task, bool $createPr): array
+    {
+        $hardening = $this->hardeningService->current();
+        $env = array_merge($_ENV, $_SERVER);
+        $env = array_filter($env, fn ($v) => is_string($v));
+        $env['AI_AGENT_HARDENING_CONFIG'] = $this->hardeningService->hardeningConfigPath();
+        if (! empty($hardening['sandbox_enabled'])) {
+            $env['AI_AGENT_USE_SANDBOX'] = '1';
+        }
+        if ($createPr && $task->status === \App\Enums\AiAgentTaskStatus::Approved) {
+            $env['AI_AGENT_PR_APPROVED'] = '1';
+        }
+        if (! ($hardening['require_approval_before_pr'] ?? false)) {
+            $env['AI_AGENT_PR_APPROVED'] = '1';
+        }
+
+        return $env;
     }
 }

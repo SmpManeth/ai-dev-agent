@@ -6,7 +6,7 @@ import re
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from config import get_settings, load_prompt
+from config import get_settings, load_agent_prompt, load_prompt
 from tools.llm_factory import build_agent_llm
 from models.state import AgentState, PatchResult, PlannerResult, ResearchResult
 from tools.patch_guard import (
@@ -16,6 +16,7 @@ from tools.patch_guard import (
     is_forbidden_path,
     normalize_risk_level,
 )
+from tools.diff_guard import validate_proposed_diff
 from tools.patch_format import repair_diff_if_needed
 from tools.patch_output import write_patch_artifacts
 
@@ -43,17 +44,38 @@ class PatcherAgent:
     def __init__(self) -> None:
         self._settings = get_settings()
 
-    def _validation_feedback_block(self, state: AgentState) -> str:
-        if not state.validation_errors and not state.validation_output:
+    def _self_fix_addon(self, state: AgentState) -> str:
+        if state.retry_count <= 0:
             return ""
-        errors = "\n".join(f"- {e}" for e in state.validation_errors) or "(none)"
+        try:
+            return load_prompt("self_fix_patcher_addon.txt")
+        except FileNotFoundError:
+            return ""
+
+    def _validation_feedback_block(self, state: AgentState) -> str:
+        fix_errors = getattr(state, "fix_verification_errors", None) or []
+        if (
+            not state.validation_errors
+            and not state.validation_output
+            and not fix_errors
+        ):
+            return ""
+        errors = "\n".join(
+            f"- {e}" for e in (state.validation_errors + list(fix_errors))
+        ) or "(none)"
+        fix_block = ""
+        if fix_errors or state.fix_verification_output:
+            fix_block = f"""
+### Fix verification (patch did not solve the bug)
+{(state.fix_verification_output or '')[:4000]}
+"""
         return f"""
-## Validation failures (self-fix retry {state.retry_count})
-The previous patch was reverted. Fix the failures below with the smallest possible change.
+## Failures (self-fix retry {state.retry_count})
+The previous patch was reverted. Address root cause and verification feedback.
 
 ### Error summary
 {errors}
-
+{fix_block}
 ### Command output
 {state.validation_output[:8000]}
 """
@@ -121,7 +143,11 @@ The previous patch was reverted. Fix the failures below with the smallest possib
         if isinstance(research, dict):
             research = ResearchResult.model_validate(research)
 
-        if research.confidence < CONFIDENCE_MIN_FOR_PATCH:
+        is_retry = state.retry_count > 0
+        if (
+            not is_retry
+            and research.confidence < CONFIDENCE_MIN_FOR_PATCH
+        ):
             return self._skip_result(
                 state,
                 summary=(
@@ -152,7 +178,9 @@ The previous patch was reverted. Fix the failures below with the smallest possib
             file_sections.append(f"### {path}\n```\n{_truncate(content)}\n```")
         files_text = "\n\n".join(file_sections)
 
-        system = load_prompt("patcher_prompt.txt")
+        system = load_agent_prompt("patcher_prompt.txt")
+        if is_retry:
+            system = system + "\n\n" + self._self_fix_addon(state)
         user_content = f"""## Bug description
 {state.task_description}
 
@@ -193,6 +221,18 @@ Respond with JSON: proposed_changes, affected_files, risk_level, patch_summary, 
             state.files_read,
         )
 
+        guard_errors = validate_proposed_diff(
+            result.unified_diff,
+            state.files_read,
+            task_description=state.task_description,
+        )
+        if guard_errors:
+            return self._skip_result(
+                state,
+                summary="Patch blocked by safety guard: " + "; ".join(guard_errors[:3]),
+                reason=guard_errors[0],
+            )
+
         allowed_candidates, blocked = filter_allowed_files(result.affected_files)
         if blocked:
             return self._skip_result(
@@ -202,11 +242,14 @@ Respond with JSON: proposed_changes, affected_files, risk_level, patch_summary, 
             )
 
         if result.risk_level == "high":
-            return self._skip_result(
-                state,
-                summary=result.patch_summary or "Patch not generated: risk level is high.",
-                reason="Patcher or guard classified risk as high.",
-            )
+            if is_retry and result.unified_diff.strip():
+                result = result.model_copy(update={"risk_level": "medium"})
+            else:
+                return self._skip_result(
+                    state,
+                    summary=result.patch_summary or "Patch not generated: risk level is high.",
+                    reason="Patcher or guard classified risk as high.",
+                )
 
         diff_paths = extract_diff_paths(result.unified_diff) or allowed_candidates
         allowed_set = set(state.files_read.keys())

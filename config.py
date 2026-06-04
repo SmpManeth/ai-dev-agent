@@ -105,3 +105,17 @@ def load_prompt(name: str) -> str:
     if not path.exists():
         raise FileNotFoundError(f"Prompt not found: {path}")
     return path.read_text(encoding="utf-8")
+
+
+def load_agent_prompt(name: str) -> str:
+    """Load shared rules plus a role-specific agent prompt."""
+    shared_path = get_settings().prompts_dir / "shared_rules.txt"
+    shared = (
+        shared_path.read_text(encoding="utf-8")
+        if shared_path.is_file()
+        else ""
+    )
+    role = load_prompt(name)
+    if not shared:
+        return role
+    return f"{shared}\n\n---\n\n{role}"

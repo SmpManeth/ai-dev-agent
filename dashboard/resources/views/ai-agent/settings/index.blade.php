@@ -11,14 +11,28 @@
             'scheduler' => 'Scheduler',
             'python-env' => 'Python .env',
             'security' => 'Security',
+            'production' => 'Production hardening',
         ];
     @endphp
 
-    <div class="mb-6 rounded-lg border border-blue-100 bg-blue-50/80 px-4 py-3 text-sm text-blue-900">
-        Configuration is read-only in this panel. Edit <code class="font-mono text-xs bg-white/80 px-1 rounded">dashboard/.env</code>
-        and the Python project <code class="font-mono text-xs bg-white/80 px-1 rounded">.env</code>, then restart
-        <code class="font-mono text-xs">php artisan serve</code> or clear config cache.
-    </div>
+    @if (session('status'))
+        <div class="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+            {{ session('status') }}
+        </div>
+    @endif
+    @if (session('error'))
+        <div class="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900">
+            {{ session('error') }}
+        </div>
+    @endif
+
+    @if ($section !== 'production')
+        <div class="mb-6 rounded-lg border border-blue-100 bg-blue-50/80 px-4 py-3 text-sm text-blue-900">
+            Configuration is read-only in this panel. Edit <code class="font-mono text-xs bg-white/80 px-1 rounded">dashboard/.env</code>
+            and the Python project <code class="font-mono text-xs bg-white/80 px-1 rounded">.env</code>, then restart
+            <code class="font-mono text-xs">php artisan serve</code> or clear config cache.
+        </div>
+    @endif
 
     <div class="border-b border-slate-200 mb-6">
         <nav class="flex gap-1 overflow-x-auto" aria-label="Settings sections">
@@ -126,5 +140,18 @@
             <li>Forbidden paths: <code class="text-xs">.env</code>, migrations, <code class="text-xs">composer.json</code>, etc.</li>
             <li>Credentials never stored in task logs (redacted on write)</li>
         </ul>
+    @endif
+
+    @if ($section === 'production')
+        @if (! ($hardening['agent_enabled'] ?? true))
+            <div class="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                <strong>Kill switch active</strong> — the agent will not run until re-enabled below.
+            </div>
+        @endif
+        @include('ai-agent.settings.partials.production-hardening')
+        <div class="mt-8 text-sm text-slate-600">
+            <p class="font-medium text-slate-800 mb-2">Build sandbox image</p>
+            <pre class="rounded-lg bg-slate-900 text-slate-100 text-xs p-4 overflow-x-auto font-mono">cd docker && docker build -f Dockerfile.sandbox -t ai-dev-agent-sandbox:latest .</pre>
+        </div>
     @endif
 @endsection

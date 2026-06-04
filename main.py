@@ -231,10 +231,47 @@ def _resolve_repo(args: argparse.Namespace, settings) -> Path:
     return _validate_repo(args.repo)
 
 
+def _enforce_hardening(repo: Path, settings) -> None:
+    from tools.audit_log import append_audit_event
+    from tools.security_policy import (
+        SecurityViolation,
+        assert_agent_enabled,
+        assert_repo_allowed,
+        assert_repo_path_allowed,
+    )
+
+    assert_agent_enabled()
+    if settings.github_owner and settings.github_repo:
+        assert_repo_allowed(settings.github_owner, settings.github_repo)
+    assert_repo_path_allowed(repo)
+    append_audit_event("agent_start", detail=str(repo))
+
+
 def main() -> None:
     args = _parse_args()
     settings = get_settings()
+    try:
+        from tools.security_policy import assert_agent_enabled
+
+        assert_agent_enabled()
+    except Exception as exc:
+        from tools.security_policy import SecurityViolation
+
+        if isinstance(exc, SecurityViolation):
+            console.print(f"[red]{exc}[/red]")
+            sys.exit(1)
+        raise
     repo = _resolve_repo(args, settings)
+    if not args.revert_patch:
+        try:
+            _enforce_hardening(repo, settings)
+        except Exception as exc:
+            from tools.security_policy import SecurityViolation
+
+            if isinstance(exc, SecurityViolation):
+                console.print(f"[red]{exc}[/red]")
+                sys.exit(1)
+            raise
 
     if args.revert_patch:
         from tools.patch_tool import revert_patch

@@ -13,10 +13,12 @@ from agents.patch_applier import patch_applier_node
 from agents.patcher import patcher_node
 from agents.planner import planner_node
 from agents.researcher import researcher_node
+from agents.fix_verifier import fix_verifier_node
 from agents.self_fix import self_fix_node
 from agents.test_runner import test_runner_node
 from models.state import AgentState, GraphState
 from tools.pipeline_progress import PipelinePhase, PipelineProgressReporter
+from tools.security_policy import max_retries_for_workflow, max_runtime_seconds
 from workflows.progress_wrapper import with_pipeline_progress
 
 
@@ -37,7 +39,13 @@ def _should_create_pr(state: dict[str, Any]) -> bool:
 
 def _route_after_patch_applier(
     state: dict[str, Any],
-) -> Literal["test_runner", "git_committer", "__end__"]:
+) -> Literal["test_runner", "git_committer", "self_fix", "__end__"]:
+    apply_status = state.get("patch_apply_status") or ""
+    if apply_status in ("apply_failed", "validation_failed"):
+        retry = state.get("retry_count", 0)
+        if retry < state.get("max_retries", 3):
+            return "self_fix"
+        return "__end__"
     if state.get("run_tests") and _patch_was_applied(state):
         return "test_runner"
     if _should_commit(state):
@@ -47,17 +55,36 @@ def _route_after_patch_applier(
 
 def _route_after_test(
     state: dict[str, Any],
-) -> Literal["self_fix", "git_committer", "__end__"]:
+) -> Literal["self_fix", "fix_verifier", "git_committer", "__end__"]:
     status = state.get("validation_status")
     if status == "failed":
         retry = state.get("retry_count", 0)
         max_retries = state.get("max_retries", 3)
         if retry < max_retries:
             return "self_fix"
+        return "__end__"
+    if _patch_was_applied(state) and state.get("run_tests"):
+        if status in ("passed", "skipped"):
+            return "fix_verifier"
     if _should_commit(state):
         if status in ("passed", "skipped") or not state.get("run_tests"):
             if status != "failed":
                 return "git_committer"
+    return "__end__"
+
+
+def _route_after_fix_verifier(
+    state: dict[str, Any],
+) -> Literal["self_fix", "git_committer", "__end__"]:
+    status = state.get("fix_verification_status")
+    if status == "failed":
+        retry = state.get("retry_count", 0)
+        max_retries = state.get("max_retries", 3)
+        if retry < max_retries:
+            return "self_fix"
+        return "__end__"
+    if _should_commit(state) and status == "passed":
+        return "git_committer"
     return "__end__"
 
 
@@ -75,7 +102,7 @@ def build_bug_fix_graph() -> Any:
 
     Flow:
       planner → researcher → patcher → patch_applier
-        → [test_runner ↔ self_fix]         → [git_committer] → [github_pr] → [jira_updater] → END
+        → [test_runner → fix_verifier ↔ self_fix] → [git_committer] → [github_pr] → [jira_updater] → END
     """
     graph = StateGraph(GraphState)
     graph.add_node("planner", with_pipeline_progress("planner", planner_node))
@@ -83,6 +110,7 @@ def build_bug_fix_graph() -> Any:
     graph.add_node("patcher", with_pipeline_progress("patcher", patcher_node))
     graph.add_node("patch_applier", with_pipeline_progress("patch_applier", patch_applier_node))
     graph.add_node("test_runner", with_pipeline_progress("test_runner", test_runner_node))
+    graph.add_node("fix_verifier", with_pipeline_progress("fix_verifier", fix_verifier_node))
     graph.add_node("self_fix", with_pipeline_progress("self_fix", self_fix_node))
     graph.add_node("git_committer", with_pipeline_progress("git_committer", git_committer_node))
     graph.add_node("github_pr", with_pipeline_progress("github_pr", github_pr_node))
@@ -98,12 +126,23 @@ def build_bug_fix_graph() -> Any:
         {
             "test_runner": "test_runner",
             "git_committer": "git_committer",
+            "self_fix": "self_fix",
             "__end__": END,
         },
     )
     graph.add_conditional_edges(
         "test_runner",
         _route_after_test,
+        {
+            "self_fix": "self_fix",
+            "fix_verifier": "fix_verifier",
+            "git_committer": "git_committer",
+            "__end__": END,
+        },
+    )
+    graph.add_conditional_edges(
+        "fix_verifier",
+        _route_after_fix_verifier,
         {
             "self_fix": "self_fix",
             "git_committer": "git_committer",
@@ -173,11 +212,26 @@ def run_bug_fix_workflow(
         jira_description=jira_description,
         progress_json_path=progress_json_path,
         current_step="started",
-        max_retries=3,
+        max_retries=max_retries_for_workflow(),
     )
     app = build_bug_fix_graph()
     try:
-        final_dict = app.invoke(initial.to_graph_dict())
+        import signal
+
+        def _timeout_handler(signum: int, frame: object) -> None:
+            raise TimeoutError(
+                f"Workflow exceeded max runtime ({max_runtime_seconds()}s)"
+            )
+
+        use_alarm = hasattr(signal, "SIGALRM")
+        if use_alarm:
+            signal.signal(signal.SIGALRM, _timeout_handler)
+            signal.alarm(max_runtime_seconds())
+        try:
+            final_dict = app.invoke(initial.to_graph_dict())
+        finally:
+            if use_alarm:
+                signal.alarm(0)
         final = AgentState.from_graph_dict(final_dict)
         if reporter:
             if _is_success_state(final):
@@ -205,6 +259,8 @@ def _is_success_state(state: AgentState) -> bool:
 
 
 def _failure_message(state: AgentState) -> str:
+    if state.fix_verification_status == "failed":
+        return (state.fix_verification_output or "Fix verification failed")[:500]
     return (
         state.patch_apply_error
         or state.commit_error

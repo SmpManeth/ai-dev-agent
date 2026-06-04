@@ -32,6 +32,8 @@ class AiAgentTask extends Model
         'pr_number',
         'logs_path',
         'error_message',
+        'token_count',
+        'estimated_cost_usd',
         'changed_files',
         'started_at',
         'completed_at',
@@ -89,13 +91,16 @@ class AiAgentTask extends Model
 
     public function requiresApprovalBeforeRun(): bool
     {
+        $hardening = app(\App\Services\AiAgentHardeningService::class)->current();
+        if ($hardening['require_approval_before_pr'] ?? false) {
+            return $this->status === AiAgentTaskStatus::Pending;
+        }
+
         if (! config('ai_agent.requires_approval')) {
             return false;
         }
 
-        return in_array($this->status, [
-            AiAgentTaskStatus::Pending,
-        ], true);
+        return $this->status === AiAgentTaskStatus::Pending;
     }
 
     public function canRun(): bool

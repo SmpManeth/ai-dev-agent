@@ -4,22 +4,25 @@ from __future__ import annotations
 
 from typing import Any
 
-from agents.patch_applier import PatchApplierAgent
 from agents.patcher import PatcherAgent
+from agents.researcher import ResearcherAgent
 from models.state import AgentState
 from tools.file_tool import FileTool
+from tools.investigation_paths import expand_investigation_paths
 from tools.patch_tool import revert_patch
 
 
 class SelfFixAgent:
-    """One self-fix iteration: revert → patcher with errors → apply."""
+    """One self-fix iteration: revert → (optional re-research) → patcher → patch_applier node applies."""
 
     def run(self, state: AgentState) -> dict[str, Any]:
         retry = state.retry_count + 1
         history_entry = {
             "retry": retry,
             "validation_errors": list(state.validation_errors),
+            "fix_verification_errors": list(state.fix_verification_errors),
             "validation_output": (state.validation_output or "")[:2000],
+            "fix_verification_output": (state.fix_verification_output or "")[:2000],
             "previous_patch_summary": state.patch_summary,
         }
 
@@ -54,39 +57,74 @@ class SelfFixAgent:
             except (OSError, ValueError, PermissionError, FileNotFoundError) as exc:
                 refreshed[path] = state.files_read.get(path, f"(unable to read: {exc})")
 
-        patcher_state = state.model_copy(
+        working = state.model_copy(
             update={
                 "files_read": refreshed,
                 "retry_count": retry,
                 "self_fix_history": history,
                 "risk_level": "medium",
+                "fix_verification_status": "",
+                "fix_verification_confidence": 0,
+                "patch_apply_status": "",
+                "patch_applied": False,
+                "patch_apply_error": "",
             }
         )
 
-        patcher_updates = PatcherAgent().run(patcher_state)
-        merged = {**patcher_state.model_dump(mode="json"), **patcher_updates}
-        applier_state = AgentState.from_graph_dict(merged)
-        applier_state.apply_patch = True
+        if state.fix_verification_status == "failed":
+            gaps = "\n".join(state.fix_verification_errors) or state.fix_verification_output
+            working = working.model_copy(
+                update={
+                    "task_description": (
+                        f"{state.task_description}\n\n"
+                        f"## Fix verification rejected previous patch (retry {retry})\n"
+                        f"{gaps[:4000]}"
+                    ),
+                }
+            )
+            from models.state import PlannerResult
 
-        apply_updates = PatchApplierAgent().run(applier_state)
+            planner = working.planner_result
+            if isinstance(planner, dict):
+                planner = PlannerResult.model_validate(planner) if planner else None
+            paths = list(planner.files_to_investigate) if planner else []
+            paths = expand_investigation_paths(
+                state.repo_path,
+                paths or list(refreshed.keys()),
+                working.task_description,
+                max_files=12,
+            )
+            if planner is not None:
+                working = working.model_copy(
+                    update={
+                        "planner_result": planner.model_copy(
+                            update={"files_to_investigate": paths},
+                        ),
+                    },
+                )
+            research_updates = ResearcherAgent(state.repo_path).run(working)
+            working = working.model_copy(update=research_updates)
 
-        history[-1]["patch_apply_status"] = apply_updates.get("patch_apply_status")
-        history[-1]["patch_summary"] = apply_updates.get("patch_summary", "")
+        patcher_updates = PatcherAgent().run(working)
+        merged = {**working.model_dump(mode="json"), **patcher_updates}
+
+        history[-1]["patch_summary"] = merged.get("patch_summary", "")
+        history[-1]["has_diff"] = bool((merged.get("unified_diff") or "").strip())
 
         reasoning = (
             f"{state.reasoning}\n\n"
             f"SelfFix retry {retry}/{state.max_retries}: "
             f"revert={'ok' if not revert_error else revert_error}, "
-            f"apply={apply_updates.get('patch_apply_status')}."
+            f"patch={'yes' if history[-1]['has_diff'] else 'empty'}."
         ).strip()
 
         return {
-            **apply_updates,
-            "files_read": refreshed,
+            **merged,
             "retry_count": retry,
             "self_fix_history": history,
             "reasoning": reasoning,
             "current_step": "self_fixed",
+            "apply_patch": True,
         }
 
 

@@ -41,6 +41,13 @@ def with_pipeline_progress(
             log_detail(
                 f"    tests: {merged.get('validation_status') or 'unknown'}"
             )
+        elif node_name == "fix_verifier":
+            log_detail(
+                f"    fix verify: {merged.get('fix_verification_status') or 'unknown'}"
+            )
+        elif node_name == "self_fix":
+            has_diff = bool((merged.get("unified_diff") or "").strip())
+            log_detail(f"    self-fix: patch regenerated={'yes' if has_diff else 'NO'}")
         elif node_name == "git_committer":
             log_detail(
                 f"    commit: {merged.get('commit_status') or 'unknown'}"

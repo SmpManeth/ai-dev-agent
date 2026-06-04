@@ -6,13 +6,14 @@ import re
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from config import get_settings, load_prompt
+from config import get_settings, load_agent_prompt
 from tools.llm_factory import build_agent_llm
 from models.state import AgentState, PlannerResult
 from tools.file_tool import FileTool
 from tools.git_tool import GitTool
 from tools.repo_profile import build_display_repo_summary
 from tools.search_tool import SearchTool
+from tools.view_context import find_views_for_task
 
 
 def _extract_keywords(task: str) -> list[str]:
@@ -102,12 +103,23 @@ class PlannerAgent:
             self._gather_context(state.task_description)
         )
 
-        system = load_prompt("planner_prompt.txt")
+        mandatory_views = find_views_for_task(
+            self.repo_path, state.task_description
+        )
+        views_hint = ""
+        if mandatory_views:
+            views_hint = (
+                "\n## Mandatory views (contain bug copy — MUST include in files_to_investigate)\n"
+                + "\n".join(f"- {p}" for p in mandatory_views)
+            )
+
+        system = load_agent_prompt("planner_prompt.txt")
         user_content = f"""## Bug description
 {state.task_description}
 
 ## Repository summary
 {repo_summary_text}
+{views_hint}
 
 ## File listing (sample)
 {search_context}
@@ -122,6 +134,13 @@ Respond with JSON matching the schema: understanding, files_to_investigate, plan
                 SystemMessage(content=system),
                 HumanMessage(content=user_content),
             ]
+        )
+        from tools.llm_usage import track_from_response
+
+        track_from_response(
+            result,
+            task_key=state.jira_issue_key,
+            model=self._settings.openai_model_for("planner"),
         )
 
         # Resolve file paths against actual repo files
@@ -140,6 +159,10 @@ Respond with JSON matching the schema: understanding, files_to_investigate, plan
                 for match in self._search_tool.search_code(None, keyword)[:3]:
                     if match.file_path not in resolved:
                         resolved.append(match.file_path)
+
+        for view_path in find_views_for_task(self.repo_path, state.task_description):
+            if view_path not in resolved:
+                resolved.insert(0, view_path)
 
         result.files_to_investigate = resolved[:15]
 

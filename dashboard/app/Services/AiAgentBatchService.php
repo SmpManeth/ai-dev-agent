@@ -20,6 +20,7 @@ class AiAgentBatchService
         private readonly AiAgentJobTracker $jobTracker,
         private readonly AiAgentRepositoryService $repositoryService,
         private readonly AiAgentProcessService $processService,
+        private readonly AiAgentHardeningService $hardeningService,
     ) {}
 
     /**
@@ -68,6 +69,10 @@ class AiAgentBatchService
      */
     public function runJiraBatch(?string $repoPath = null, string $triggeredBy = 'manual', bool $waitForCompletion = false): array
     {
+        if (! $this->hardeningService->isAgentEnabled()) {
+            throw new \RuntimeException('AI agent is disabled (kill switch). Enable it in Settings → Production hardening.');
+        }
+
         $repoPath = $this->repositoryService->ensureSynced($repoPath);
 
         $this->recordSchedulerRun([
@@ -86,12 +91,23 @@ class AiAgentBatchService
         $command = $this->buildBatchCommand($repoPath, $batchJson);
 
         $batchLog = storage_path('logs/jira-batch-'.now()->format('Ymd-His').'.log');
+        $hardening = $this->hardeningService->current();
+        $env = array_filter(array_merge($_ENV, $_SERVER), fn ($v) => is_string($v));
+        $env['AI_AGENT_HARDENING_CONFIG'] = $this->hardeningService->hardeningConfigPath();
+        if (! empty($hardening['sandbox_enabled'])) {
+            $env['AI_AGENT_USE_SANDBOX'] = '1';
+        }
+        $env['AI_AGENT_PR_APPROVED'] = ($hardening['require_approval_before_pr'] ?? false) ? '0' : '1';
+
         $process = new Process(
             $command,
             config('ai_agent.project_path'),
+            $env,
             null,
-            null,
-            null,
+            min(
+                config('ai_agent.default_timeout'),
+                ($hardening['max_runtime_minutes'] ?? 120) * 60,
+            ),
         );
 
         $process->start();

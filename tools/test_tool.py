@@ -132,14 +132,24 @@ def _run_composer_install(root: Path, *, timeout: int) -> tuple[int, str]:
     last_code = 2
     _prepare_composer_for_install(root)
     log_step("Running composer install (may take several minutes)…", style="cyan")
+    from tools.sandbox_runner import should_use_sandbox, run_in_sandbox
+
     for argv in _composer_install_attempts():
-        result = run_logged(
-            argv,
-            cwd=root,
-            timeout=timeout,
-            env=os.environ.copy(),
-            echo_command=True,
-        )
+        if should_use_sandbox():
+            sandbox = run_in_sandbox(argv, workspace=root, timeout=timeout)
+            result = type("R", (), {
+                "returncode": sandbox.returncode,
+                "stdout": sandbox.stdout,
+                "stderr": sandbox.stderr,
+            })()
+        else:
+            result = run_logged(
+                argv,
+                cwd=root,
+                timeout=timeout,
+                env=os.environ.copy(),
+                echo_command=True,
+            )
         block = [
             f"$ {' '.join(argv)}",
             f"exit code: {result.returncode}",
@@ -153,6 +163,83 @@ def _run_composer_install(root: Path, *, timeout: int) -> tuple[int, str]:
         if result.returncode == 0 and _vendor_ready(root):
             return 0, "\n\n---\n\n".join(logs)
     return last_code, "\n\n---\n\n".join(logs)
+
+
+def run_frontend_validation(
+    repo_path: str | Path,
+    *,
+    changed_files: list[str] | None = None,
+    timeout: int = 600,
+) -> ValidationResult | None:
+    """
+    Run npm scripts when the patch touches non-PHP files in a Node/Laravel frontend.
+
+    Returns None if package.json is missing or no scripts are configured.
+    """
+    root = Path(repo_path).resolve()
+    pkg_path = root / "package.json"
+    if not pkg_path.is_file():
+        return None
+
+    dep_ok, dep_log = ensure_project_dependencies(root, timeout=timeout)
+    if not dep_ok and not _node_modules_ready(root):
+        return ValidationResult(
+            status="failed",
+            project_type="node",
+            commands_attempted=["npm install"],
+            output=dep_log,
+            errors=["npm install did not complete; cannot validate frontend change."],
+        )
+
+    pkg = _read_json(pkg_path) or {}
+    scripts = pkg.get("scripts") if isinstance(pkg.get("scripts"), dict) else {}
+    commands: list[ValidationCommand] = []
+    for label, script in (
+        ("npm run test", "test"),
+        ("npm run lint", "lint"),
+        ("npm run build", "build"),
+    ):
+        if script in scripts:
+            commands.append(ValidationCommand(label, ["npm", "run", script]))
+
+    if not commands:
+        return None
+
+    runs: list[ValidationRunResult] = []
+    attempted: list[str] = []
+    all_output: list[str] = [dep_log] if dep_log else []
+    all_errors: list[str] = []
+
+    for cmd in commands:
+        attempted.append(cmd.label)
+        run = _run_command(root, cmd, timeout=timeout)
+        runs.append(run)
+        block = f"$ {' '.join(cmd.argv)}\nexit code: {run.exit_code}"
+        if run.stdout.strip():
+            block += f"\n{run.stdout.strip()[-2500:]}"
+        if run.stderr.strip():
+            block += f"\n{run.stderr.strip()[-2500:]}"
+        all_output.append(block)
+        if run.passed:
+            listed = ", ".join(changed_files or [])[:200]
+            return ValidationResult(
+                status="passed",
+                project_type="node",
+                commands_attempted=attempted,
+                runs=runs,
+                output="\n\n---\n\n".join(all_output),
+                errors=[],
+            )
+        all_errors.append(f"{cmd.label} failed (exit {run.exit_code})")
+
+    return ValidationResult(
+        status="failed",
+        project_type="node",
+        commands_attempted=attempted,
+        runs=runs,
+        output="\n\n---\n\n".join(all_output),
+        errors=all_errors or ["All frontend validation commands failed."],
+    )
 
 
 def changed_files_are_non_php(changed_files: list[str] | None) -> bool:
@@ -252,17 +339,25 @@ def run_lightweight_php_validation(
 
 def output_allows_commit_without_full_tests(validation_output: str) -> bool:
     """True when validation_output indicates it is safe to commit without phpunit."""
+    if "Fix verifier must approve" in validation_output:
+        return False
     markers = (
-        "Validation passed:",
         "Lightweight PHP syntax check passed",
-        "Lightweight validation passed",
-        "patch only changes non-PHP files",
-        "no PHP files to lint",
-        "no PHP files in patch",
         "deprecation noise only",
         "No validation commands",
     )
     return any(m in validation_output for m in markers)
+
+
+def validation_used_weak_checks(validation_output: str) -> bool:
+    """True when only syntax/non-PHP skip ran — semantic fix verifier is required."""
+    weak = (
+        "lightweight-non-php",
+        "patch only changes non-PHP files",
+        "Fix verifier must approve",
+        "full test suite skipped",
+    )
+    return any(m in validation_output for m in weak)
 
 
 # PHP 8.5+: E_ALL without deprecation levels (keeps real errors visible).
@@ -485,8 +580,24 @@ def run_validation(
     if (
         changed_files
         and changed_files_are_non_php(changed_files)
-        and project_type in ("laravel", "php")
+        and project_type in ("laravel", "php", "node")
     ):
+        frontend = run_frontend_validation(
+            root, changed_files=changed_files, timeout=900
+        )
+        if frontend is not None:
+            combined = "\n\n---\n\n".join(
+                part for part in (dep_log, frontend.output) if part
+            )
+            return ValidationResult(
+                status=frontend.status,
+                project_type=frontend.project_type,
+                commands_attempted=frontend.commands_attempted,
+                runs=frontend.runs,
+                output=combined,
+                errors=frontend.errors,
+            )
+
         light = run_lightweight_php_validation(root, paths=changed_files)
         combined = "\n\n---\n\n".join(
             part for part in (dep_log, light.output) if part
@@ -497,7 +608,11 @@ def run_validation(
                 project_type=light.project_type,
                 commands_attempted=light.commands_attempted,
                 runs=light.runs,
-                output=combined,
+                output=(
+                    combined
+                    + "\n\nWARNING: Frontend change validated without npm test/lint/build "
+                    "(no scripts or install failed). Fix verifier must approve before commit."
+                ),
                 errors=[],
             )
         if light.status == "failed":

@@ -18,7 +18,10 @@ from tools.git_commit_tool import (
     validate_files_for_commit,
 )
 from tools.patch_tool import get_changed_files
-from tools.test_tool import output_allows_commit_without_full_tests
+from tools.test_tool import (
+    output_allows_commit_without_full_tests,
+    validation_used_weak_checks,
+)
 
 
 def validation_allows_commit(state: AgentState) -> tuple[bool, str]:
@@ -26,6 +29,12 @@ def validation_allows_commit(state: AgentState) -> tuple[bool, str]:
     if state.run_tests:
         output = state.validation_output or ""
         if state.validation_status == "passed":
+            if validation_used_weak_checks(output):
+                if state.fix_verification_status != "passed":
+                    return False, (
+                        "Validation only ran weak checks (no npm/phpunit). "
+                        "Fix verification must pass before commit."
+                    )
             return True, ""
         if (
             state.validation_status == "skipped"

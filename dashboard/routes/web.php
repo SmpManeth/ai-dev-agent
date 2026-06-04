@@ -13,6 +13,8 @@ Route::redirect('/', '/ai-agent');
 Route::prefix('ai-agent')->name('ai-agent.')->group(function () {
     Route::get('/', [AiAgentDashboardController::class, 'index'])->name('dashboard');
     Route::get('settings', [AiAgentSettingsController::class, 'index'])->name('settings');
+    Route::post('settings/hardening', [AiAgentSettingsController::class, 'updateHardening'])
+        ->name('settings.update');
 
     Route::post('jira-batch/run', [AiAgentBatchController::class, 'runJiraBatch'])
         ->name('jira-batch.run');

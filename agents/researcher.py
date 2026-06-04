@@ -6,10 +6,11 @@ import re
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from config import get_settings, load_prompt
+from config import get_settings, load_agent_prompt
 from tools.llm_factory import build_agent_llm
 from models.state import AgentState, PlannerResult, ResearchResult
 from tools.file_tool import FileTool
+from tools.investigation_paths import expand_investigation_paths
 from tools.search_tool import SearchTool
 
 
@@ -61,7 +62,11 @@ class ResearcherAgent:
                 plan=state.plan,
             )
 
-        paths = planner_data.files_to_investigate
+        paths = expand_investigation_paths(
+            self.repo_path,
+            planner_data.files_to_investigate,
+            state.task_description,
+        )
         if not paths and state.files_found:
             # Last resort: first few source files
             paths = [
@@ -81,7 +86,7 @@ class ResearcherAgent:
         search_extra = self._supplemental_search(state.task_description, files_read)
         plan_text = "\n".join(f"- {step}" for step in (state.plan or planner_data.plan))
 
-        system = load_prompt("researcher_prompt.txt")
+        system = load_agent_prompt("researcher_prompt.txt")
         user_content = f"""## Bug description
 {state.task_description}
 
@@ -109,6 +114,8 @@ Respond with JSON: suspected_root_cause, evidence, recommended_fix, confidence (
             ]
         )
 
+        result = _apply_research_sanity(result, files_read, state.task_description)
+
         reasoning_parts = [
             "Researcher completed root-cause analysis.",
             f"Evidence items: {len(result.evidence)}.",
@@ -122,6 +129,48 @@ Respond with JSON: suspected_root_cause, evidence, recommended_fix, confidence (
             "research_result": result.model_dump(),
             "reasoning": full_reasoning,
         }
+
+
+def _apply_research_sanity(
+    result: ResearchResult,
+    files_read: dict[str, str],
+    task_description: str,
+) -> ResearchResult:
+    """Lower confidence when analysis cites files not read or ignores Blade+Swiper."""
+    read_paths = set(files_read.keys())
+    combined = " ".join(result.evidence) + result.recommended_fix + result.suspected_root_cause
+
+    blade_read = any(p.endswith(".blade.php") for p in read_paths)
+    corpus = "\n".join(files_read.values()).lower()
+    has_swiper = "new swiper" in corpus or "swiper-slide" in corpus
+
+    penalties: list[str] = []
+    if (
+        blade_read
+        and has_swiper
+        and "app.js" in result.recommended_fix.lower()
+        and ".blade.php" not in result.recommended_fix
+    ):
+        penalties.append("recommends app.js but Swiper lives in Blade")
+
+    if blade_read and task_description:
+        task_lower = task_description.lower()
+        if any(w in task_lower for w in ("slider", "scroll", "autoplay", "carousel")):
+            if "app.js" in result.recommended_fix and ".blade.php" not in result.recommended_fix:
+                penalties.append("UI slider bug should fix Blade/Swiper not only app.js")
+
+    if penalties:
+        capped = min(result.confidence, 45)
+        extra = "; ".join(penalties)
+        return result.model_copy(
+            update={
+                "confidence": capped,
+                "suspected_root_cause": (
+                    f"{result.suspected_root_cause}\n\n[Sanity check] {extra}"
+                ),
+            }
+        )
+    return result
 
 
 def researcher_node(state: dict[str, Any]) -> dict[str, Any]:

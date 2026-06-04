@@ -6,5 +6,8 @@ __pycache__/
 .DS_Store
 outputs/latest.patch
 outputs/latest_summary.md
+outputs/audit/
+outputs/cost/
+dashboard/storage/app/ai-agent-hardening.json
 workspaces/
 

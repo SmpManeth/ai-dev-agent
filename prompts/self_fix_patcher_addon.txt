@@ -1,0 +1,13 @@
+SELF-FIX RETRY — OVERRIDE (this section supersedes empty-diff defaults):
+
+A previous patch FAILED tests or fix verification. You MUST deliver a corrected unified_diff.
+
+Rules:
+1. Read "Fix verification" and "Failures" below — address every gap
+2. If the prior fix used wrong file (e.g. app.js instead of Blade Swiper), switch to the file research recommends
+3. Do NOT repeat the same wrong approach
+4. Do NOT return risk_level "high" with empty unified_diff — produce a minimal correct patch
+5. risk_level must be low or medium when unified_diff is non-empty
+6. No invented DOM ids — only identifiers from the file contents provided
+
+If the verifier said Swiper/autoplay was wrong in app.js, move the fix to the Blade Swiper init block.

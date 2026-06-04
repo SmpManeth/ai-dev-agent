@@ -39,6 +39,19 @@ class GitHubPrAgent:
                 pr_status="rejected",
             )
 
+        from tools.security_policy import get_hardening_policy
+        import os
+
+        policy = get_hardening_policy()
+        if policy.require_approval_before_pr and not os.environ.get(
+            "AI_AGENT_PR_APPROVED", ""
+        ).strip():
+            return self._fail_push_pr(
+                "PR creation requires human approval (require_approval_before_pr).",
+                push_status="rejected",
+                pr_status="rejected",
+            )
+
         if state.commit_status != "committed" or not state.commit_created:
             return self._fail_push_pr(
                 f"Commit not created (status={state.commit_status}).",

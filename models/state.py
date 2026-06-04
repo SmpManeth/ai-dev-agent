@@ -115,6 +115,10 @@ class AgentState(BaseModel):
     validation_commands: list[str] = Field(default_factory=list)
     validation_output: str = ""
     validation_errors: list[str] = Field(default_factory=list)
+    fix_verification_status: str = ""
+    fix_verification_confidence: int = 0
+    fix_verification_output: str = ""
+    fix_verification_errors: list[str] = Field(default_factory=list)
     retry_count: int = 0
     max_retries: int = 3
     self_fix_history: list[dict[str, Any]] = Field(default_factory=list)
@@ -196,6 +200,10 @@ class GraphState(TypedDict, total=False):
     validation_commands: list[str]
     validation_output: str
     validation_errors: list[str]
+    fix_verification_status: str
+    fix_verification_confidence: int
+    fix_verification_output: str
+    fix_verification_errors: list[str]
     retry_count: int
     max_retries: int
     self_fix_history: list[dict[str, Any]]

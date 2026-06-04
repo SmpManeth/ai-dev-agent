@@ -92,6 +92,14 @@ def is_forbidden_path(path: str) -> bool:
     if name == ".env" or name.startswith(".env."):
         return True
 
+    try:
+        from tools.security_policy import is_path_blocked_by_policy
+
+        if is_path_blocked_by_policy(path):
+            return True
+    except ImportError:
+        pass
+
     for fragment in _FORBIDDEN_FRAGMENTS:
         if fragment in normalized:
             return True
