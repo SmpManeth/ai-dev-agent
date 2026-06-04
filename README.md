@@ -99,3 +99,15 @@ uv run pytest
 ```
 
 Tool tests do not require an API key.
+
+## Documentation (for humans and AI assistants)
+
+| Doc | Description |
+|-----|-------------|
+| [AGENTS.md](AGENTS.md) | **Start here** for AI coding agents in this repo |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Pipeline, agents, patch stack |
+| [docs/PRODUCTION_DEPLOYMENT.md](docs/PRODUCTION_DEPLOYMENT.md) | Host on a production server |
+| [docs/PRODUCTION_HARDENING.md](docs/PRODUCTION_HARDENING.md) | Sandbox, kill switch, audit |
+| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Patch apply, validation, Blade/Swiper |
+| [docs/JIRA_AND_GIT.md](docs/JIRA_AND_GIT.md) | Jira batch, branches, PRs |
+| [dashboard/README.md](dashboard/README.md) | Laravel control panel |
