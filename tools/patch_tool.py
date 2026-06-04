@@ -152,7 +152,10 @@ def validate_patch(
                 (len(removed) == len(added) and removed)
                 or "already exists" in err_lower
                 or "corrupt patch" in err_lower
+                or "patch does not apply" in err_lower
+                or "patch failed" in err_lower
                 or (added and not removed)
+                or (removed and added)
             )
             if can_fallback:
                 warnings.append(
@@ -232,6 +235,42 @@ def _extract_replacement_lines(diff: str) -> tuple[list[str], list[str]]:
     return removed, added
 
 
+def _apply_block_replacement_fallback(repo_root: Path, diff: str) -> bool:
+    """Replace a contiguous removed block with added lines (1:N line changes)."""
+    removed, added = _extract_replacement_lines(diff)
+    if not removed or not added:
+        return False
+
+    paths = extract_diff_paths(diff)
+    if len(paths) != 1:
+        return False
+
+    target = repo_root / paths[0]
+    if not target.is_file():
+        return False
+
+    text = target.read_text(encoding="utf-8")
+    file_lines = text.splitlines(keepends=True)
+    if not file_lines and text:
+        file_lines = [text]
+
+    from tools.patch_align import find_block_start
+
+    start = find_block_start([ln.rstrip("\n\r") for ln in file_lines], removed)
+    if start is None:
+        return False
+
+    end = start + len(removed)
+    new_lines = [ln if ln.endswith("\n") else ln + "\n" for ln in added]
+    merged = file_lines[:start] + new_lines + file_lines[end:]
+    new_text = "".join(merged)
+    if new_text == text:
+        return False
+
+    target.write_text(new_text, encoding="utf-8")
+    return True
+
+
 def _apply_line_replacement_fallback(repo_root: Path, diff: str) -> bool:
     """
     Apply a minimal patch by replacing exact removed lines in target files.
@@ -240,6 +279,8 @@ def _apply_line_replacement_fallback(repo_root: Path, diff: str) -> bool:
     """
     removed, added = _extract_replacement_lines(diff)
     if not removed or len(removed) != len(added):
+        if removed and added and _apply_block_replacement_fallback(repo_root, diff):
+            return True
         return False
 
     paths = extract_diff_paths(diff)
@@ -372,6 +413,12 @@ def apply_patch(repo_path: str | Path, patch_path: str | Path) -> None:
         _cleanup_orig_files(repo_root)
         return
     errors.append(result.stderr.strip() or result.stdout.strip())
+
+    log_detail("  Trying block-replacement fallback …")
+    if _apply_block_replacement_fallback(repo_root, diff):
+        log_detail("  ✓ Applied via block-replacement fallback")
+        _cleanup_orig_files(repo_root)
+        return
 
     log_detail("  Trying line-replacement fallback …")
     if _apply_line_replacement_fallback(repo_root, diff):

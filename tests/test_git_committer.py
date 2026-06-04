@@ -26,15 +26,31 @@ def test_validation_allows_pass() -> None:
     assert ok is True
 
 
-def test_validation_allows_skip_without_tests() -> None:
+def test_validation_allows_commit_when_fix_verified_without_test_flag() -> None:
     state = AgentState(
         repo_path="/tmp",
         task_description="x",
         run_tests=False,
         validation_status="",
+        patch_applied=True,
+        fix_verification_status="passed",
     )
     ok, _ = validation_allows_commit(state)
     assert ok is True
+
+
+def test_validation_requires_fix_verifier_after_lightweight_pass() -> None:
+    state = AgentState(
+        repo_path="/tmp",
+        task_description="x",
+        run_tests=False,
+        validation_status="passed",
+        validation_output="Full test suite skipped for PHP/Blade-only patch.",
+        fix_verification_status="",
+    )
+    ok, reason = validation_allows_commit(state)
+    assert ok is False
+    assert "Fix verification" in reason
 
 
 def test_validation_allows_skipped_with_lightweight_pass_message() -> None:

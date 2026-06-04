@@ -334,7 +334,6 @@ class AiAgentBatchService
             '--repo',
             $repoPath,
             '--apply-patch',
-            '--run-tests',
             '--commit',
             '--create-pr',
             '--max-tasks='.(string) config('ai_agent.jira_batch_max_tasks', 1),

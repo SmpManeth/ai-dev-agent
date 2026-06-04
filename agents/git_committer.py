@@ -26,25 +26,30 @@ from tools.test_tool import (
 
 def validation_allows_commit(state: AgentState) -> tuple[bool, str]:
     """Check whether validation status permits a commit."""
-    if state.run_tests:
-        output = state.validation_output or ""
-        if state.validation_status == "passed":
-            if validation_used_weak_checks(output):
-                if state.fix_verification_status != "passed":
-                    return False, (
-                        "Validation only ran weak checks (no npm/phpunit). "
-                        "Fix verification must pass before commit."
-                    )
-            return True, ""
-        if (
-            state.validation_status == "skipped"
-            and output_allows_commit_without_full_tests(output)
-        ):
+    output = state.validation_output or ""
+    status = state.validation_status
+
+    if status == "failed":
+        return False, f"Validation failed: {(output or status)[:300]}"
+
+    if status in ("passed", "skipped"):
+        if status == "skipped" and output_allows_commit_without_full_tests(output):
             return True, "Validation accepted with reduced checks (composer/tests unavailable)."
-        if state.validation_status == "skipped":
-            return False, f"Validation skipped: {output[:200]}"
-        return False, f"Validation status is '{state.validation_status}'."
-    return True, "Validation not requested; committing after successful patch apply."
+        if validation_used_weak_checks(output):
+            if state.fix_verification_status != "passed":
+                return False, (
+                    "Validation only ran lightweight checks (no phpunit/npm test). "
+                    "Fix verification must pass before commit."
+                )
+        if status == "passed":
+            return True, ""
+        if state.fix_verification_status == "passed" and state.patch_applied:
+            return True, "Fix verification passed; commit allowed."
+        return False, f"Validation skipped: {output[:200]}"
+
+    if state.fix_verification_status == "passed" and state.patch_applied:
+        return True, "Fix verification passed; commit allowed."
+    return False, f"Validation status is '{status or 'not run'}'."
 
 
 class GitCommitterAgent:

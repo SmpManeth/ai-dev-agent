@@ -62,3 +62,38 @@ def test_run_validation_skips_artisan_for_readme_when_vendor_ready(
     result = run_validation(tmp_path, changed_files=["README.md"])
     assert result.status == "passed"
     assert "non-PHP" in result.output
+
+
+def test_run_validation_skips_artisan_for_blade_when_not_full_suite(
+    tmp_path: Path, monkeypatch
+) -> None:
+    (tmp_path / "composer.json").write_text(
+        '{"require":{"laravel/framework":"^10.0"},"scripts":{"test":["@php artisan test"]}}',
+        encoding="utf-8",
+    )
+    (tmp_path / "artisan").write_text("#!/usr/bin/env php\n", encoding="utf-8")
+    views = tmp_path / "resources" / "views"
+    views.mkdir(parents=True)
+    blade = views / "page.blade.php"
+    blade.write_text("<div>{{ $x }}</div>\n", encoding="utf-8")
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    (vendor / "autoload.php").write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "tools.test_tool.ensure_project_dependencies",
+        lambda *a, **k: (True, "deps ok"),
+    )
+
+    def fail_if_artisan(*args, **kwargs):
+        raise AssertionError("php artisan test should not run for Blade-only patches")
+
+    monkeypatch.setattr("tools.test_tool._run_command", fail_if_artisan)
+
+    result = run_validation(
+        tmp_path,
+        changed_files=["resources/views/page.blade.php"],
+        full_test_suite=False,
+    )
+    assert result.status == "passed"
+    assert "Full test suite skipped" in result.output

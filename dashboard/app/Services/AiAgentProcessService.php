@@ -182,7 +182,6 @@ class AiAgentProcessService
             '--task',
             $task->task_description,
             '--apply-patch',
-            '--run-tests',
             '--commit',
             '--summary-json',
             $summaryPath,

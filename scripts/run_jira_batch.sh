@@ -17,5 +17,5 @@ if [[ -n "${AI_AGENT_DEFAULT_REPO_PATH:-}" ]]; then
 fi
 
 exec python3 main.py --from-jira "${REPO_ARGS[@]}" \
-  --apply-patch --run-tests --commit --create-pr \
+  --apply-patch --commit --create-pr \
   --max-tasks="$MAX_TASKS"

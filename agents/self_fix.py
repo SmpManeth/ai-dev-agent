@@ -17,9 +17,14 @@ class SelfFixAgent:
 
     def run(self, state: AgentState) -> dict[str, Any]:
         retry = state.retry_count + 1
+        apply_errors: list[str] = []
+        if state.patch_apply_error:
+            apply_errors.append(state.patch_apply_error)
+
         history_entry = {
             "retry": retry,
-            "validation_errors": list(state.validation_errors),
+            "validation_errors": list(state.validation_errors) + apply_errors,
+            "patch_apply_error": state.patch_apply_error,
             "fix_verification_errors": list(state.fix_verification_errors),
             "validation_output": (state.validation_output or "")[:2000],
             "fix_verification_output": (state.fix_verification_output or "")[:2000],
@@ -57,6 +62,7 @@ class SelfFixAgent:
             except (OSError, ValueError, PermissionError, FileNotFoundError) as exc:
                 refreshed[path] = state.files_read.get(path, f"(unable to read: {exc})")
 
+        validation_errors = list(state.validation_errors) + apply_errors
         working = state.model_copy(
             update={
                 "files_read": refreshed,
@@ -68,8 +74,21 @@ class SelfFixAgent:
                 "patch_apply_status": "",
                 "patch_applied": False,
                 "patch_apply_error": "",
+                "validation_errors": validation_errors,
             }
         )
+
+        if apply_errors:
+            working = working.model_copy(
+                update={
+                    "task_description": (
+                        f"{state.task_description}\n\n"
+                        f"## Previous patch did not apply (retry {retry})\n"
+                        f"{state.patch_apply_error[:4000]}\n\n"
+                        "Regenerate unified_diff using EXACT lines from the file excerpts below."
+                    ),
+                }
+            )
 
         if state.fix_verification_status == "failed":
             gaps = "\n".join(state.fix_verification_errors) or state.fix_verification_output

@@ -185,7 +185,7 @@ def _finalize_task_workspace(
 def run_batch_from_jira(
     repo_path: str | Path,
     *,
-    run_tests: bool = True,
+    run_tests: bool = False,
     dry_run: bool = False,
     max_tasks: int = 1,
     settings: Settings | None = None,

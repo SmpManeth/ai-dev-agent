@@ -17,17 +17,34 @@ from tools.patch_guard import (
     normalize_risk_level,
 )
 from tools.diff_guard import validate_proposed_diff
+from tools.file_excerpt import excerpt_for_patch
+from tools.file_tool import FileTool
 from tools.patch_format import repair_diff_if_needed
 from tools.patch_output import write_patch_artifacts
 
 CONFIDENCE_MIN_FOR_PATCH = 60
 
 
-def _truncate(content: str, max_chars: int = 12_000) -> str:
-    if len(content) <= max_chars:
-        return content
-    half = max_chars // 2
-    return content[:half] + "\n\n... [truncated] ...\n\n" + content[-half:]
+def _patch_context(content: str, path: str, task: str) -> str:
+    anchors = [w for w in re.split(r"\W+", task) if len(w) > 6][:12]
+    return excerpt_for_patch(content, extra_anchors=anchors + [path.split("/")[-1]])
+
+
+def _disk_files_for_repair(
+    repo_path: str,
+    diff: str,
+    files_read: dict[str, str],
+) -> dict[str, str]:
+    """Load full on-disk content for paths touched by the diff (repair uses real lines)."""
+    paths = extract_diff_paths(diff) or list(files_read.keys())
+    tool = FileTool(repo_path)
+    out: dict[str, str] = dict(files_read)
+    for path in paths:
+        try:
+            out[path] = tool.read_file(path)
+        except (OSError, ValueError, PermissionError, FileNotFoundError):
+            pass
+    return out
 
 
 def _strip_markdown_fences(diff: str) -> str:
@@ -54,15 +71,18 @@ class PatcherAgent:
 
     def _validation_feedback_block(self, state: AgentState) -> str:
         fix_errors = getattr(state, "fix_verification_errors", None) or []
+        apply_err = (state.patch_apply_error or "").strip()
         if (
             not state.validation_errors
             and not state.validation_output
             and not fix_errors
+            and not apply_err
         ):
             return ""
-        errors = "\n".join(
-            f"- {e}" for e in (state.validation_errors + list(fix_errors))
-        ) or "(none)"
+        error_items = list(state.validation_errors) + list(fix_errors)
+        if apply_err:
+            error_items.append(f"Patch apply failed: {apply_err}")
+        errors = "\n".join(f"- {e}" for e in error_items) or "(none)"
         fix_block = ""
         if fix_errors or state.fix_verification_output:
             fix_block = f"""
@@ -175,7 +195,9 @@ The previous patch was reverted. Address root cause and verification feedback.
         for path, content in state.files_read.items():
             if content.startswith("(unable to read"):
                 continue
-            file_sections.append(f"### {path}\n```\n{_truncate(content)}\n```")
+            file_sections.append(
+                f"### {path}\n```\n{_patch_context(content, path, state.task_description)}\n```"
+            )
         files_text = "\n\n".join(file_sections)
 
         system = load_agent_prompt("patcher_prompt.txt")
@@ -216,9 +238,10 @@ Respond with JSON: proposed_changes, affected_files, risk_level, patch_summary, 
         )
 
         result.risk_level = normalize_risk_level(str(result.risk_level))
+        raw_diff = _strip_markdown_fences(result.unified_diff)
         result.unified_diff = repair_diff_if_needed(
-            _strip_markdown_fences(result.unified_diff),
-            state.files_read,
+            raw_diff,
+            _disk_files_for_repair(state.repo_path, raw_diff, state.files_read),
         )
 
         guard_errors = validate_proposed_diff(

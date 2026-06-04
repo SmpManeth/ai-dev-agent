@@ -46,7 +46,7 @@ def _route_after_patch_applier(
         if retry < state.get("max_retries", 3):
             return "self_fix"
         return "__end__"
-    if state.get("run_tests") and _patch_was_applied(state):
+    if _patch_was_applied(state):
         return "test_runner"
     if _should_commit(state):
         return "git_committer"
@@ -63,13 +63,10 @@ def _route_after_test(
         if retry < max_retries:
             return "self_fix"
         return "__end__"
-    if _patch_was_applied(state) and state.get("run_tests"):
-        if status in ("passed", "skipped"):
-            return "fix_verifier"
-    if _should_commit(state):
-        if status in ("passed", "skipped") or not state.get("run_tests"):
-            if status != "failed":
-                return "git_committer"
+    if _patch_was_applied(state) and status in ("passed", "skipped"):
+        return "fix_verifier"
+    if _should_commit(state) and status != "failed":
+        return "git_committer"
     return "__end__"
 
 

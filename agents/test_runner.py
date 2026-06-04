@@ -12,15 +12,6 @@ class TestRunnerAgent:
     """Runs validation commands against the target repository."""
 
     def run(self, state: AgentState) -> dict[str, Any]:
-        if not state.run_tests:
-            return {
-                "current_step": "test_skipped",
-                "validation_status": "skipped",
-                "validation_commands": [],
-                "validation_output": "Test run disabled (--run-tests not set).",
-                "validation_errors": [],
-            }
-
         if not state.apply_patch or not state.patch_applied:
             return {
                 "current_step": "test_skipped",
@@ -34,6 +25,7 @@ class TestRunnerAgent:
         result = run_validation(
             state.repo_path,
             changed_files=candidates or None,
+            full_test_suite=state.run_tests,
         )
         status = result.status
         if status == "skipped" and output_allows_commit_without_full_tests(result.output):

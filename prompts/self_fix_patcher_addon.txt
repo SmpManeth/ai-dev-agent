@@ -9,5 +9,7 @@ Rules:
 4. Do NOT return risk_level "high" with empty unified_diff — produce a minimal correct patch
 5. risk_level must be low or medium when unified_diff is non-empty
 6. No invented DOM ids — only identifiers from the file contents provided
+7. If "Patch apply failed" appears below, copy minus (-) lines verbatim from the file excerpt — wrong line numbers or whitespace cause git apply to fail
 
 If the verifier said Swiper/autoplay was wrong in app.js, move the fix to the Blade Swiper init block.
+For Swiper autoplay: edit the existing `new Swiper(...)` block (add `loop: true` and `autoplay: { delay: 7000, disableOnInteraction: false }` after `loop: false`) — do not add a second Swiper instance.

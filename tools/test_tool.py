@@ -170,6 +170,7 @@ def run_frontend_validation(
     *,
     changed_files: list[str] | None = None,
     timeout: int = 600,
+    script_names: tuple[str, ...] | None = None,
 ) -> ValidationResult | None:
     """
     Run npm scripts when the patch touches non-PHP files in a Node/Laravel frontend.
@@ -199,6 +200,8 @@ def run_frontend_validation(
         ("npm run lint", "lint"),
         ("npm run build", "build"),
     ):
+        if script_names is not None and script not in script_names:
+            continue
         if script in scripts:
             commands.append(ValidationCommand(label, ["npm", "run", script]))
 
@@ -251,6 +254,33 @@ def changed_files_are_non_php(changed_files: list[str] | None) -> bool:
         if normalized.endswith(".php") or normalized.endswith(".blade.php"):
             return False
     return True
+
+
+def changed_files_are_php_or_blade_only(changed_files: list[str] | None) -> bool:
+    """True when every changed path is PHP or Blade (no JS/CSS/assets)."""
+    if not changed_files:
+        return False
+    for rel in changed_files:
+        normalized = rel.replace("\\", "/").strip().lower()
+        if normalized.endswith(".php") or normalized.endswith(".blade.php"):
+            continue
+        return False
+    return True
+
+
+def changed_files_touch_frontend_assets(changed_files: list[str] | None) -> bool:
+    """True when the patch touches JS/TS/CSS or frontend resource dirs."""
+    if not changed_files:
+        return False
+    for rel in changed_files:
+        normalized = rel.replace("\\", "/").strip().lower()
+        if normalized.endswith(
+            (".js", ".ts", ".tsx", ".jsx", ".vue", ".css", ".scss", ".sass", ".less")
+        ):
+            return True
+        if "/resources/js/" in normalized or "/resources/css/" in normalized:
+            return True
+    return False
 
 
 def run_lightweight_php_validation(
@@ -345,6 +375,9 @@ def output_allows_commit_without_full_tests(validation_output: str) -> bool:
         "Lightweight PHP syntax check passed",
         "deprecation noise only",
         "No validation commands",
+        "patch only changes non-PHP files",
+        "Full test suite skipped",
+        "Validation passed:",
     )
     return any(m in validation_output for m in markers)
 
@@ -356,6 +389,9 @@ def validation_used_weak_checks(validation_output: str) -> bool:
         "patch only changes non-PHP files",
         "Fix verifier must approve",
         "full test suite skipped",
+        "Full test suite skipped",
+        "lightweight validation only",
+        "lightweight checks",
     )
     return any(m in validation_output for m in weak)
 
@@ -559,31 +595,74 @@ def _run_command(
         )
 
 
+def _lightweight_validation_result(
+    root: Path,
+    *,
+    dep_log: str,
+    changed_files: list[str] | None,
+    skip_reason: str,
+) -> ValidationResult:
+    light = run_lightweight_php_validation(root, paths=changed_files)
+    combined = "\n\n---\n\n".join(part for part in (dep_log, light.output) if part)
+    note = (
+        f"\n\nNOTE: {skip_reason} "
+        "Pass `--run-tests` to run phpunit / artisan test / npm test."
+    )
+    return ValidationResult(
+        status=light.status,
+        project_type=light.project_type,
+        commands_attempted=light.commands_attempted,
+        runs=light.runs,
+        output=(combined + note) if light.status == "passed" else combined,
+        errors=light.errors,
+    )
+
+
 def run_validation(
     repo_path: str | Path,
     *,
     changed_files: list[str] | None = None,
+    full_test_suite: bool = False,
 ) -> ValidationResult:
     """
     Run project validation commands until one passes or all fail.
 
-    For Node/Laravel, tries each configured command in order.
-    Passes if any command exits 0.
+    By default (full_test_suite=False) only lightweight checks run for PHP/Blade
+    view changes (php -l) and npm build when JS/CSS changed — not phpunit/npm test.
     """
     root = Path(repo_path).resolve()
     project_type = detect_project_type(root)
-    log_step(f"Validating project ({project_type})…", style="bold cyan")
+    mode = "full test suite" if full_test_suite else "lightweight"
+    log_step(f"Validating project ({project_type}, {mode})…", style="bold cyan")
 
     dep_ok, dep_log = ensure_project_dependencies(root)
     prefix_output = dep_log
+
+    if not full_test_suite and changed_files and changed_files_are_php_or_blade_only(
+        changed_files
+    ):
+        return _lightweight_validation_result(
+            root,
+            dep_log=dep_log,
+            changed_files=changed_files,
+            skip_reason="Full test suite skipped for PHP/Blade-only patch.",
+        )
 
     if (
         changed_files
         and changed_files_are_non_php(changed_files)
         and project_type in ("laravel", "php", "node")
     ):
+        npm_scripts: tuple[str, ...] | None = None
+        if not full_test_suite:
+            npm_scripts = ("build",) if changed_files_touch_frontend_assets(
+                changed_files
+            ) else ()
         frontend = run_frontend_validation(
-            root, changed_files=changed_files, timeout=900
+            root,
+            changed_files=changed_files,
+            timeout=900,
+            script_names=npm_scripts,
         )
         if frontend is not None:
             combined = "\n\n---\n\n".join(
@@ -603,6 +682,11 @@ def run_validation(
             part for part in (dep_log, light.output) if part
         )
         if light.status == "passed":
+            warn = (
+                "WARNING: Frontend change validated without npm test/lint "
+                if full_test_suite
+                else "NOTE: Non-PHP patch validated with lightweight checks only (no npm test). "
+            )
             return ValidationResult(
                 status="passed",
                 project_type=light.project_type,
@@ -610,7 +694,7 @@ def run_validation(
                 runs=light.runs,
                 output=(
                     combined
-                    + "\n\nWARNING: Frontend change validated without npm test/lint/build "
+                    + f"\n\n{warn}"
                     "(no scripts or install failed). Fix verifier must approve before commit."
                 ),
                 errors=[],
@@ -623,6 +707,16 @@ def run_validation(
                 output=combined,
                 errors=light.errors or ["Non-PHP patch validation failed."],
             )
+
+    if not full_test_suite and changed_files and not changed_files_are_non_php(
+        changed_files
+    ):
+        return _lightweight_validation_result(
+            root,
+            dep_log=dep_log,
+            changed_files=changed_files,
+            skip_reason="Full test suite skipped (lightweight validation only).",
+        )
 
     if not dep_ok and project_type in ("laravel", "php"):
         light = run_lightweight_php_validation(root, paths=changed_files)

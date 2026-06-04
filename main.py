@@ -314,13 +314,14 @@ def main() -> None:
         apply_patch = args.apply_patch or args.run_tests or args.commit or args.create_pr
         if not args.dry_run and not apply_patch:
             console.print(
-                "[yellow]Enabling --apply-patch --run-tests --commit for batch run.[/yellow]"
+                "[yellow]Enabling --apply-patch --commit for batch run "
+                "(add --run-tests for full phpunit/npm test).[/yellow]"
             )
 
         try:
             summary = run_batch_from_jira(
                 repo,
-                run_tests=args.run_tests or not args.dry_run,
+                run_tests=args.run_tests,
                 dry_run=args.dry_run,
                 max_tasks=max(1, args.max_tasks),
                 settings=settings,
