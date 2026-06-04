@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Enums\AiAgentPipelinePhase;
 use App\Enums\AiAgentTaskStatus;
 use App\Models\AiAgentTask;
 use App\Support\AiAgentPaths;
@@ -12,10 +13,12 @@ class AiAgentProcessService
 {
     public function __construct(
         private readonly AiAgentLogService $logService,
-        private readonly AiAgentBatchService $batchService,
+        private readonly AiAgentRepositoryService $repositoryService,
+        private readonly AiAgentPipelineSyncService $pipelineSync,
+        private readonly AiAgentJobTracker $jobTracker,
     ) {}
 
-    public function run(AiAgentTask $task, ?bool $createPr = null): int
+    public function run(AiAgentTask $task, ?bool $createPr = null, bool $background = true): int
     {
         if (! $task->canRun()) {
             throw new \RuntimeException('Task cannot be run in its current state.');
@@ -35,17 +38,25 @@ class AiAgentProcessService
             $createPr = ! in_array($task->risk_level, ['medium', 'high'], true) || $wasApproved;
         }
 
+        $progressPath = $this->progressPathFor($task);
+        File::ensureDirectoryExists(dirname($progressPath));
+
         $task->update([
             'status' => AiAgentTaskStatus::Running,
             'started_at' => $task->started_at ?? now(),
             'completed_at' => null,
             'error_message' => null,
+            'pipeline_phase' => AiAgentPipelinePhase::Queued->value,
+            'pipeline_label' => AiAgentPipelinePhase::Queued->label(),
+            'pipeline_percent' => 0,
+            'pipeline_terminal' => false,
+            'pipeline_updated_at' => now(),
         ]);
 
         $this->logService->log($task, 'Starting Python agent', 'info', 'run');
 
         if (config('ai_agent.auto_sync_repo', true)) {
-            $synced = $this->batchService->ensureRepositorySynced($task->repo_path);
+            $synced = $this->repositoryService->ensureSynced($task->repo_path);
             if ($task->repo_path !== $synced) {
                 $task->update([
                     'repo_path' => $synced,
@@ -57,7 +68,7 @@ class AiAgentProcessService
         $summaryPath = storage_path("app/agent-runs/task-{$task->id}-summary.json");
         File::ensureDirectoryExists(dirname($summaryPath));
 
-        $command = $this->buildCommand($task, $summaryPath, $createPr);
+        $command = $this->buildCommand($task, $summaryPath, $createPr, $progressPath);
         $this->logService->log(
             $task,
             'Command: '.$this->logService->sanitize(implode(' ', $this->redactCommand($command))),
@@ -65,6 +76,38 @@ class AiAgentProcessService
             'run',
         );
 
+        $logFile = storage_path("logs/agent-task-{$task->id}.log");
+
+        if (! $background) {
+            return $this->runForeground($task, $command, $summaryPath, $logFile);
+        }
+
+        $process = new Process(
+            $command,
+            config('ai_agent.project_path'),
+            null,
+            null,
+            null,
+        );
+        $process->start();
+
+        $jobId = 'task-'.$task->id.'-'.now()->format('Ymd-His');
+        $this->jobTracker->register($jobId, (int) $process->getPid(), [
+            'type' => 'single_task',
+            'task_id' => $task->id,
+            'summary_path' => $summaryPath,
+            'log_file' => $logFile,
+            'progress_path' => $progressPath,
+        ]);
+
+        return 0;
+    }
+
+    /**
+     * @param  list<string>  $command
+     */
+    private function runForeground(AiAgentTask $task, array $command, string $summaryPath, string $logFile): int
+    {
         $process = new Process(
             $command,
             config('ai_agent.project_path'),
@@ -75,22 +118,43 @@ class AiAgentProcessService
 
         $process->run(function (string $type, string $buffer) use ($task) {
             $this->logService->logProcessOutput($task, $type, $buffer);
+            $this->pipelineSync->syncProgressFile($this->progressPathFor($task));
         });
 
-        $logFile = storage_path("logs/agent-task-{$task->id}.log");
         File::put($logFile, $process->getOutput()."\n".$process->getErrorOutput());
-
         $exitCode = $process->getExitCode() ?? 1;
-        $this->syncFromSummary($task, $summaryPath, $exitCode, $logFile);
+        $this->finalizeFromSummary($task, $summaryPath, $logFile, $exitCode);
 
         return $exitCode;
+    }
+
+    public function finalizeFromSummary(
+        AiAgentTask $task,
+        string $summaryPath,
+        string $logFile,
+        ?int $exitCode = null,
+    ): void {
+        if ($task->jira_issue_key) {
+            $this->pipelineSync->syncProgressFile($this->progressPathFor($task));
+            $task->refresh();
+        }
+
+        if ($exitCode === null) {
+            $exitCode = File::exists($summaryPath) ? 0 : 1;
+        }
+
+        $this->syncFromSummary($task, $summaryPath, $exitCode, $logFile);
     }
 
     /**
      * @return list<string>
      */
-    public function buildCommand(AiAgentTask $task, string $summaryPath, bool $createPr): array
-    {
+    public function buildCommand(
+        AiAgentTask $task,
+        string $summaryPath,
+        bool $createPr,
+        ?string $progressPath = null,
+    ): array {
         $python = config('ai_agent.python_path');
         $main = rtrim(config('ai_agent.project_path'), '/').'/main.py';
 
@@ -122,7 +186,18 @@ class AiAgentProcessService
             $cmd[] = $task->jira_issue_key;
         }
 
+        $progress = $progressPath ?? $this->progressPathFor($task);
+        $cmd[] = '--progress-json';
+        $cmd[] = $progress;
+
         return $cmd;
+    }
+
+    public function progressPathFor(AiAgentTask $task): string
+    {
+        $key = $task->jira_issue_key ?: ('task-'.$task->id);
+
+        return $this->pipelineSync->progressDirectory().'/'.str_replace('/', '_', $key).'.json';
     }
 
     private function syncFromSummary(
@@ -134,6 +209,8 @@ class AiAgentProcessService
         $updates = [
             'logs_path' => $logFile,
             'completed_at' => now(),
+            'pipeline_terminal' => true,
+            'pipeline_updated_at' => now(),
         ];
 
         if (File::exists($summaryPath)) {
@@ -147,10 +224,24 @@ class AiAgentProcessService
             $updates['error_message'] = $summary['error_message'] ?? null;
 
             $updates['status'] = $this->mapSummaryStatus($summary, $exitCode);
+            $updates['pipeline_phase'] = $exitCode === 0
+                ? AiAgentPipelinePhase::Completed->value
+                : AiAgentPipelinePhase::Failed->value;
+            $updates['pipeline_label'] = $exitCode === 0
+                ? AiAgentPipelinePhase::Completed->label()
+                : AiAgentPipelinePhase::Failed->label();
+            $updates['pipeline_percent'] = $exitCode === 0 ? 100 : (int) ($task->pipeline_percent ?? 0);
         } else {
             $updates['status'] = $exitCode === 0
                 ? AiAgentTaskStatus::Completed
                 : AiAgentTaskStatus::Failed;
+            $updates['pipeline_phase'] = $exitCode === 0
+                ? AiAgentPipelinePhase::Completed->value
+                : AiAgentPipelinePhase::Failed->value;
+            $updates['pipeline_label'] = $updates['pipeline_phase'] === AiAgentPipelinePhase::Completed->value
+                ? AiAgentPipelinePhase::Completed->label()
+                : AiAgentPipelinePhase::Failed->label();
+            $updates['pipeline_percent'] = $exitCode === 0 ? 100 : 0;
             if ($exitCode !== 0) {
                 $updates['error_message'] = 'Agent exited with code '.$exitCode;
             }

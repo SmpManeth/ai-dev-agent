@@ -30,7 +30,7 @@ php artisan migrate
 php artisan serve
 ```
 
-Open http://127.0.0.1:8000/ai-agent/tasks — the **Connection** panel shows whether paths and config are ready.
+Open http://127.0.0.1:8000/ai-agent — **Overview**, **Tasks**, and **Settings** (read-only env inspection with secrets masked).
 
 ## How tasks appear
 

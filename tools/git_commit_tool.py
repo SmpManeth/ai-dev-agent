@@ -7,7 +7,9 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from tools.agent_console import log_detail
 from tools.patch_guard import is_forbidden_path
+from tools.subprocess_log import run_logged
 
 
 @dataclass(frozen=True)
@@ -38,11 +40,17 @@ class CommitResult:
 
 
 def _run_git(git_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", "-C", str(git_root), *args],
-        capture_output=True,
-        text=True,
-        check=False,
+    argv = ["git", "-C", str(git_root), *args]
+    result = run_logged(argv, echo_command=True, stream=False)
+    if result.returncode != 0 and (result.stdout or result.stderr):
+        tail = (result.stderr or result.stdout).strip().splitlines()[-3:]
+        for line in tail:
+            log_detail(f"  git: {line}")
+    return subprocess.CompletedProcess(
+        argv,
+        result.returncode,
+        result.stdout,
+        result.stderr,
     )
 
 
@@ -134,6 +142,35 @@ def checkout_branch(repo_path: str | Path, branch_name: str) -> None:
     result = _run_git(git_root, "checkout", branch_name)
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "checkout failed")
+
+
+def delete_local_branch(
+    repo_path: str | Path,
+    branch_name: str,
+    *,
+    base_branch: str = "main",
+) -> bool:
+    """Delete a local branch after checking out base. Returns True if branch was removed."""
+    git_root = get_git_root(repo_path)
+    if git_root is None:
+        return False
+    name = branch_name.strip()
+    if not name:
+        return False
+
+    verify = _run_git(git_root, "rev-parse", "--verify", name)
+    if verify.returncode != 0:
+        return False
+
+    current = get_current_branch(repo_path)
+    if current == name or current == name.split("/")[-1]:
+        try:
+            checkout_base_branch(repo_path, base_branch)
+        except RuntimeError:
+            _run_git(git_root, "checkout", base_branch)
+
+    result = _run_git(git_root, "branch", "-D", name)
+    return result.returncode == 0
 
 
 def checkout_base_branch(repo_path: str | Path, base_branch: str = "main") -> None:

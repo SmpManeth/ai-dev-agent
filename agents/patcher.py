@@ -6,9 +6,8 @@ import re
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
-
 from config import get_settings, load_prompt
+from tools.llm_factory import build_agent_llm
 from models.state import AgentState, PatchResult, PlannerResult, ResearchResult
 from tools.patch_guard import (
     diff_only_touches_files,
@@ -58,17 +57,6 @@ The previous patch was reverted. Fix the failures below with the smallest possib
 ### Command output
 {state.validation_output[:8000]}
 """
-
-    def _build_llm(self) -> ChatOpenAI:
-        if not self._settings.has_llm:
-            raise RuntimeError(
-                "OPENAI_API_KEY is required. Set it in the environment or .env file."
-            )
-        return ChatOpenAI(
-            model=self._settings.openai_model,
-            api_key=self._settings.openai_api_key,
-            temperature=0.0,
-        )
 
     def _skip_result(
         self,
@@ -190,7 +178,7 @@ The previous patch was reverted. Fix the failures below with the smallest possib
 Respond with JSON: proposed_changes, affected_files, risk_level, patch_summary, unified_diff.
 """
 
-        llm = self._build_llm()
+        llm = build_agent_llm("patcher", self._settings)
         structured = llm.with_structured_output(PatchResult)
         result: PatchResult = structured.invoke(
             [

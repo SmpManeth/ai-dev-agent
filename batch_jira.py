@@ -11,11 +11,7 @@ from rich.console import Console
 
 from config import Settings, get_settings
 from jira_runner import JiraWorkItem, build_task_from_issue
-from tools.git_commit_tool import (
-    branch_exists,
-    checkout_base_branch,
-    jira_branch_name,
-)
+from tools.git_commit_tool import jira_branch_name
 from tools.github_tool import (
     find_open_pr_for_branch,
     get_pr_url,
@@ -30,8 +26,17 @@ from tools.jira_tool import (
     search_ai_fix_issues,
     validate_issue_for_agent,
 )
-from tools.patch_tool import revert_patch
-from tools.repo_sync import ensure_repository, reset_worktree_to_origin
+from tools.pipeline_progress import (
+    PipelinePhase,
+    PipelineProgressReporter,
+    progress_path_for_issue,
+)
+from tools.repo_sync import ensure_repository
+from tools.task_teardown import (
+    TaskTeardownOptions,
+    prepare_workspace_for_task,
+    teardown_after_task,
+)
 from workflows.bug_fix_graph import run_bug_fix_workflow
 
 console = Console()
@@ -56,6 +61,9 @@ class BatchItemResult:
     error_message: str = ""
     validation_status: str = ""
     changed_files: list[str] = field(default_factory=list)
+    pipeline_phase: str = ""
+    pipeline_label: str = ""
+    pipeline_percent: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -109,25 +117,13 @@ def check_duplicate_pr(
     """
     Return (should_skip, reason, pr_url).
 
-    Skips when an open PR exists for the branch or the local branch already exists.
+    Skips only when an open PR already exists on GitHub for this branch.
+
+    Local ai-fix branches are removed by workspace teardown before each run.
     """
     settings = settings or get_settings()
     repo = Path(repo_path)
-
-    if branch_exists(repo, branch_name):
-        if settings.has_github:
-            try:
-                target = resolve_github_target(repo, settings)
-                token = settings.github_token or ""
-                existing = find_open_pr_for_branch(
-                    target.owner, target.repo, branch_name, token
-                )
-                if existing:
-                    url = get_pr_url(existing)
-                    return True, "PR already exists", url
-            except RuntimeError:
-                pass
-        return True, f"Branch already exists: {branch_name}", ""
+    _ = repo  # reserved for future local checks
 
     if settings.has_github:
         try:
@@ -162,17 +158,28 @@ def _failure_reason(state: Any) -> str:
     return state.patch_apply_error or state.commit_error or state.pr_error or "Workflow failed"
 
 
-def _reset_repo_after_issue(repo_path: Path, base_branch: str, *, had_patch: bool) -> None:
-    """Return repo to base branch for the next batch item."""
-    if had_patch:
-        try:
-            revert_patch(repo_path, files=None)
-        except RuntimeError:
-            pass
-    try:
-        checkout_base_branch(repo_path, base_branch)
-    except RuntimeError:
-        pass
+def _finalize_task_workspace(
+    repo: Path,
+    *,
+    issue_key: str,
+    task_branch: str,
+    progress_path: str,
+    settings: Settings,
+) -> None:
+    """Full cleanup so the next Jira issue starts from a pristine base branch."""
+    teardown_after_task(
+        repo,
+        settings,
+        options=TaskTeardownOptions(
+            issue_key=issue_key,
+            task_branch=task_branch,
+            progress_path=progress_path or None,
+            clear_outputs=True,
+            remove_progress_file=False,
+            delete_all_ai_fix_branches=True,
+            sync_with_origin=True,
+        ),
+    )
 
 
 def run_batch_from_jira(
@@ -184,6 +191,7 @@ def run_batch_from_jira(
     settings: Settings | None = None,
     batch_json_path: str | None = None,
     skip_repo_sync: bool = False,
+    progress_dir: str | Path | None = None,
 ) -> BatchSummary:
     """
     Process eligible ai-fix Jira issues sequentially (default: one per run).
@@ -202,6 +210,10 @@ def run_batch_from_jira(
         console.print(f"Repository sync: {sync.message}", style="dim")
     else:
         repo = Path(repo_path).resolve()
+
+    progress_root = Path(progress_dir).resolve() if progress_dir else None
+    if progress_root:
+        progress_root.mkdir(parents=True, exist_ok=True)
 
     issues = fetch_ai_fix_issues(settings, max_tasks=max_tasks)
     summary = BatchSummary(total_found=len(issues), dry_run=dry_run)
@@ -251,22 +263,50 @@ def run_batch_from_jira(
         branch = jira_branch_name(issue.key)
         console.print(f"Processing {issue.key}...", style="bold")
 
+        progress_path = (
+            str(progress_path_for_issue(progress_root, issue.key))
+            if progress_root
+            else ""
+        )
+        reporter = (
+            PipelineProgressReporter(
+                progress_path,
+                issue_key=issue.key,
+                jira_summary=issue.summary,
+            )
+            if progress_path
+            else None
+        )
+
         ok, reject_reason = validate_issue_for_agent(issue, settings)
         if not ok:
+            if reporter:
+                reporter.complete_skipped(reject_reason)
             result = BatchItemResult(
                 issue_key=issue.key,
                 summary=issue.summary,
                 status=BATCH_STATUS_SKIPPED,
                 reason=reject_reason,
                 branch_name=branch,
+                pipeline_phase=PipelinePhase.SKIPPED.value,
+                pipeline_label=reject_reason,
             )
             summary.skipped += 1
             _print_item_result(result)
             summary.items.append(result)
+            prepare_workspace_for_task(
+                repo,
+                issue_key=issue.key,
+                task_branch=branch,
+                settings=settings,
+                progress_path=progress_path,
+            )
             continue
 
         skip, skip_reason, pr_url = check_duplicate_pr(repo, branch, settings)
         if skip:
+            if reporter:
+                reporter.complete_skipped(skip_reason)
             try:
                 add_comment(
                     issue.key,
@@ -282,20 +322,37 @@ def run_batch_from_jira(
                 reason=skip_reason,
                 pr_url=pr_url,
                 branch_name=branch,
+                pipeline_phase=PipelinePhase.SKIPPED.value,
+                pipeline_label=skip_reason,
             )
             summary.skipped += 1
             _print_item_result(result)
             summary.items.append(result)
+            prepare_workspace_for_task(
+                repo,
+                issue_key=issue.key,
+                task_branch=branch,
+                settings=settings,
+                progress_path=progress_path,
+            )
             continue
+
+        if reporter:
+            reporter.write(PipelinePhase.SYNCING_REPO, label="Resetting workspace to base branch")
+
+        prepare_workspace_for_task(
+            repo,
+            issue_key=issue.key,
+            task_branch=branch,
+            settings=settings,
+            progress_path=progress_path,
+        )
 
         task_description = build_task_from_issue(issue)
         try:
-            reset_worktree_to_origin(repo, settings)
-        except RuntimeError as exc:
-            console.print(f"[yellow]Worktree reset warning:[/yellow] {exc}")
+            if reporter:
+                reporter.write(PipelinePhase.QUEUED, label="Starting agent pipeline")
 
-        had_patch = False
-        try:
             final_state = run_bug_fix_workflow(
                 str(repo),
                 task_description,
@@ -308,10 +365,12 @@ def run_batch_from_jira(
                 jira_issue_key=issue.key,
                 jira_summary=issue.summary,
                 jira_description=issue.description,
+                progress_json_path=progress_path,
             )
-            had_patch = bool(final_state.patch_applied)
         except Exception as exc:
             reason = str(exc)
+            if reporter:
+                reporter.complete_failed(reason)
             try:
                 add_comment(
                     issue.key,
@@ -327,14 +386,20 @@ def run_batch_from_jira(
                 reason=reason,
                 error_message=reason,
                 branch_name=branch,
+                pipeline_phase=PipelinePhase.FAILED.value,
+                pipeline_label=reason[:200],
             )
             summary.failed += 1
             _print_item_result(result)
             summary.items.append(result)
-            _reset_repo_after_issue(repo, base_branch, had_patch=had_patch)
+            _finalize_task_workspace(
+                repo,
+                issue_key=issue.key,
+                task_branch=branch,
+                progress_path=progress_path,
+                settings=settings,
+            )
             continue
-
-        _reset_repo_after_issue(repo, base_branch, had_patch=had_patch)
 
         if final_state.pr_status in ("created", "exists") and final_state.pr_url:
             result = BatchItemResult(
@@ -347,35 +412,47 @@ def run_batch_from_jira(
                 branch_name=branch,
                 validation_status=final_state.validation_status or "",
                 changed_files=list(final_state.changed_files or []),
+                pipeline_phase=PipelinePhase.COMPLETED.value,
+                pipeline_label="Draft pull request created",
+                pipeline_percent=100,
             )
             summary.pr_created += 1
             _print_item_result(result)
             summary.items.append(result)
-            continue
+        else:
+            reason = _failure_reason(final_state)
+            try:
+                add_comment(
+                    issue.key,
+                    format_jira_failure_comment(reason),
+                    settings,
+                )
+            except RuntimeError:
+                pass
 
-        reason = _failure_reason(final_state)
-        try:
-            add_comment(
-                issue.key,
-                format_jira_failure_comment(reason),
-                settings,
+            result = BatchItemResult(
+                issue_key=issue.key,
+                summary=issue.summary,
+                status=BATCH_STATUS_FAILED,
+                reason=reason,
+                error_message=reason,
+                branch_name=branch,
+                validation_status=final_state.validation_status or "",
+                changed_files=list(final_state.changed_files or []),
+                pipeline_phase=PipelinePhase.FAILED.value,
+                pipeline_label=reason[:200],
             )
-        except RuntimeError:
-            pass
+            summary.failed += 1
+            _print_item_result(result)
+            summary.items.append(result)
 
-        result = BatchItemResult(
+        _finalize_task_workspace(
+            repo,
             issue_key=issue.key,
-            summary=issue.summary,
-            status=BATCH_STATUS_FAILED,
-            reason=reason,
-            error_message=reason,
-            branch_name=branch,
-            validation_status=final_state.validation_status or "",
-            changed_files=list(final_state.changed_files or []),
+            task_branch=branch,
+            progress_path=progress_path,
+            settings=settings,
         )
-        summary.failed += 1
-        _print_item_result(result)
-        summary.items.append(result)
 
     _print_batch_completed(summary)
     if batch_json_path:

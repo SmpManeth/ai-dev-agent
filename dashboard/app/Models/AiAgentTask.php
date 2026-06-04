@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\AiAgentPipelinePhase;
 use App\Enums\AiAgentTaskStatus;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -17,6 +18,14 @@ class AiAgentTask extends Model
         'branch_name',
         'task_description',
         'status',
+        'pipeline_phase',
+        'pipeline_label',
+        'pipeline_percent',
+        'pipeline_step',
+        'pipeline_step_total',
+        'pipeline_terminal',
+        'pipeline_history',
+        'pipeline_updated_at',
         'risk_level',
         'validation_status',
         'pr_url',
@@ -32,10 +41,29 @@ class AiAgentTask extends Model
     {
         return [
             'status' => AiAgentTaskStatus::class,
+            'pipeline_phase' => AiAgentPipelinePhase::class,
+            'pipeline_terminal' => 'boolean',
+            'pipeline_history' => 'array',
             'changed_files' => 'array',
             'started_at' => 'datetime',
             'completed_at' => 'datetime',
+            'pipeline_updated_at' => 'datetime',
         ];
+    }
+
+    public function pipelinePhaseEnum(): AiAgentPipelinePhase
+    {
+        return $this->pipeline_phase ?? AiAgentPipelinePhase::NotStarted;
+    }
+
+    public function isPipelineActive(): bool
+    {
+        return $this->pipelinePhaseEnum()->isActive() && ! $this->pipeline_terminal;
+    }
+
+    public function displayPipelineLabel(): string
+    {
+        return $this->pipeline_label ?: $this->pipelinePhaseEnum()->label();
     }
 
     public function logs(): HasMany
@@ -72,6 +100,10 @@ class AiAgentTask extends Model
 
     public function canRun(): bool
     {
+        if ($this->isPipelineActive()) {
+            return false;
+        }
+
         if (in_array($this->status, [
             AiAgentTaskStatus::Rejected,
             AiAgentTaskStatus::Running,

@@ -8,7 +8,9 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from tools.agent_console import log_detail
 from tools.patch_format import prepare_patch_for_apply
+from tools.subprocess_log import run_logged
 from tools.patch_guard import (
     extract_diff_paths,
     is_forbidden_path,
@@ -332,39 +334,54 @@ def apply_patch(repo_path: str | Path, patch_path: str | Path) -> None:
     if not raw_diff:
         raise ValueError("Cannot apply empty patch.")
 
+    paths = extract_diff_paths(raw_diff)
+    log_detail(f"  Files in patch: {', '.join(paths) if paths else '(unknown)'}")
+    log_detail("  Preparing patch for target repo…")
     diff = prepare_patch_for_apply(raw_diff, repo_root)
+    if diff != raw_diff:
+        log_detail("  Repaired patch format (hunk counts / line prefixes)")
     patch_file.write_text(diff, encoding="utf-8")
 
     errors: list[str] = []
 
     if _is_git_repo(repo_root):
+        log_detail("  Trying git apply --check …")
         check = _run_git(repo_root, "apply", "--check", "-p0", str(patch_file))
         if check.returncode == 0:
+            log_detail("  Trying git apply …")
             apply = _run_git(repo_root, "apply", "-p0", str(patch_file))
             if apply.returncode == 0:
+                log_detail("  ✓ Applied via git apply")
                 _cleanup_orig_files(repo_root)
                 return
             errors.append(apply.stderr.strip() or apply.stdout.strip())
         else:
             errors.append(check.stderr.strip() or check.stdout.strip())
+            if errors[-1]:
+                log_detail(f"  git apply --check failed: {errors[-1][:200]}")
 
-    result = subprocess.run(
+    log_detail("  Trying patch -p0 …")
+    result = run_logged(
         ["patch", "-p0", "--forward", "-i", str(patch_file)],
         cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
+        timeout=120,
+        echo_command=True,
     )
     if result.returncode == 0:
+        log_detail("  ✓ Applied via patch command")
         _cleanup_orig_files(repo_root)
         return
     errors.append(result.stderr.strip() or result.stdout.strip())
 
+    log_detail("  Trying line-replacement fallback …")
     if _apply_line_replacement_fallback(repo_root, diff):
+        log_detail("  ✓ Applied via line-replacement fallback")
         _cleanup_orig_files(repo_root)
         return
 
+    log_detail("  Trying insertion fallback …")
     if _apply_insertion_fallback(repo_root, diff):
+        log_detail("  ✓ Applied via insertion fallback")
         _cleanup_orig_files(repo_root)
         return
 

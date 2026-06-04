@@ -13,7 +13,9 @@ from pathlib import Path
 from typing import Any
 
 from config import Settings, get_settings
+from tools.agent_console import log_detail, log_step
 from tools.git_commit_tool import get_git_root
+from tools.subprocess_log import run_logged
 
 GITHUB_API = "https://api.github.com"
 AI_SAFETY_NOTE = (
@@ -176,11 +178,12 @@ def push_branch(
     target = resolve_github_target(repo_path, settings)
     push_url = f"https://x-access-token:{token}@github.com/{target.owner}/{target.repo}.git"
 
-    result = subprocess.run(
+    log_step("Pushing branch to GitHub…", style="cyan")
+    log_detail(f"  $ git push origin {branch_name}")
+    result = run_logged(
         ["git", "-C", str(git_root), "push", push_url, branch_name],
-        capture_output=True,
-        text=True,
-        check=False,
+        timeout=600,
+        echo_command=False,
     )
     if result.returncode != 0:
         err = result.stderr.strip() or result.stdout.strip()

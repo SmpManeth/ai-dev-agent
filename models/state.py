@@ -76,6 +76,7 @@ class AgentState(BaseModel):
     jira_issue_key: str = ""
     jira_summary: str = ""
     jira_description: str = ""
+    progress_json_path: str = ""
 
     files_found: list[str] = Field(default_factory=list)
     files_read: dict[str, str] = Field(default_factory=dict)
@@ -167,6 +168,7 @@ class GraphState(TypedDict, total=False):
     jira_issue_key: str
     jira_summary: str
     jira_description: str
+    progress_json_path: str
     files_found: list[str]
     files_read: dict[str, str]
     plan: list[str]

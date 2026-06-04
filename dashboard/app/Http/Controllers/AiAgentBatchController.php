@@ -19,8 +19,14 @@ class AiAgentBatchController extends Controller
         try {
             $result = $this->batchService->runJiraBatch($repoPath, 'manual');
 
+            if (! empty($result['running'])) {
+                return redirect()
+                    ->route('ai-agent.tasks.index')
+                    ->with('success', 'Jira batch started. Pipeline status updates live below.');
+            }
+
             return redirect()
-                ->route('ai-agent.tasks.index')
+                ->route('ai-agent.dashboard')
                 ->with('success', sprintf(
                     'Jira batch finished: %d PR created, %d failed, %d skipped (of %d).',
                     $result['pr_created'],
@@ -30,7 +36,7 @@ class AiAgentBatchController extends Controller
                 ));
         } catch (\Throwable $e) {
             return redirect()
-                ->route('ai-agent.tasks.index')
+                ->route('ai-agent.dashboard')
                 ->with('error', $e->getMessage());
         }
     }

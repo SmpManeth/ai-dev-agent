@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from models.state import AgentState
+from tools.agent_console import log_detail
 from tools.patch_output import get_patch_paths
 from tools.patch_tool import (
     PatchValidationResult,
@@ -34,13 +35,18 @@ class PatchApplierAgent:
             patch_path_str = str(patch_path)
 
         patch_path = Path(patch_path_str)
+        log_detail(f"  Patch file: {patch_path}")
+        log_detail(f"  Risk level: {state.risk_level or 'high'}")
         validation: PatchValidationResult = validate_patch(
             state.repo_path,
             patch_path,
             risk_level=state.risk_level or "high",
         )
+        log_detail(f"  Pre-apply validation: {validation.status_text}")
 
         if not validation.ok:
+            for err in validation.errors:
+                log_detail(f"  ✗ {err}")
             errors = "; ".join(validation.errors)
             return {
                 "current_step": "apply_failed",
@@ -64,8 +70,10 @@ class PatchApplierAgent:
             }
 
         try:
+            log_detail("  Applying patch to working tree…")
             apply_patch(state.repo_path, patch_path)
         except (OSError, RuntimeError, ValueError) as exc:
+            log_detail(f"  ✗ Apply failed: {exc}")
             return {
                 "current_step": "apply_failed",
                 "patch_applied": False,

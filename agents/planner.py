@@ -6,9 +6,8 @@ import re
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
-
 from config import get_settings, load_prompt
+from tools.llm_factory import build_agent_llm
 from models.state import AgentState, PlannerResult
 from tools.file_tool import FileTool
 from tools.git_tool import GitTool
@@ -64,17 +63,6 @@ class PlannerAgent:
         self._git_tool = GitTool(repo_path)
         self._settings = get_settings()
 
-    def _build_llm(self) -> ChatOpenAI:
-        if not self._settings.has_llm:
-            raise RuntimeError(
-                "OPENAI_API_KEY is required. Set it in the environment or .env file."
-            )
-        return ChatOpenAI(
-            model=self._settings.openai_model,
-            api_key=self._settings.openai_api_key,
-            temperature=0.1,
-        )
-
     def _gather_context(self, task: str) -> tuple[str, str, list[str], str]:
         """Collect git summary, file listing, and search hits."""
         summary = self._git_tool.get_repo_summary()
@@ -127,7 +115,7 @@ class PlannerAgent:
 Respond with JSON matching the schema: understanding, files_to_investigate, plan.
 """
 
-        llm = self._build_llm()
+        llm = build_agent_llm("planner", self._settings)
         structured = llm.with_structured_output(PlannerResult)
         result: PlannerResult = structured.invoke(
             [

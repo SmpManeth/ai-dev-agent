@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Enums\AiAgentPipelinePhase;
 use App\Enums\AiAgentTaskStatus;
 use App\Models\AiAgentLog;
 use App\Models\AiAgentTask;
@@ -15,6 +16,10 @@ class AiAgentBatchService
 
     public function __construct(
         private readonly AiAgentLogService $logService,
+        private readonly AiAgentPipelineSyncService $pipelineSync,
+        private readonly AiAgentJobTracker $jobTracker,
+        private readonly AiAgentRepositoryService $repositoryService,
+        private readonly AiAgentProcessService $processService,
     ) {}
 
     /**
@@ -61,9 +66,9 @@ class AiAgentBatchService
      *
      * @return array<string, mixed>
      */
-    public function runJiraBatch(?string $repoPath = null, string $triggeredBy = 'manual'): array
+    public function runJiraBatch(?string $repoPath = null, string $triggeredBy = 'manual', bool $waitForCompletion = false): array
     {
-        $repoPath = $this->ensureRepositorySynced($repoPath);
+        $repoPath = $this->repositoryService->ensureSynced($repoPath);
 
         $this->recordSchedulerRun([
             'last_run_at' => now()->toIso8601String(),
@@ -76,6 +81,7 @@ class AiAgentBatchService
 
         $batchJson = storage_path('app/agent-runs/jira-batch-'.now()->format('Ymd-His').'.json');
         File::ensureDirectoryExists(dirname($batchJson));
+        File::ensureDirectoryExists($this->pipelineSync->progressDirectory());
 
         $command = $this->buildBatchCommand($repoPath, $batchJson);
 
@@ -85,96 +91,216 @@ class AiAgentBatchService
             config('ai_agent.project_path'),
             null,
             null,
-            config('ai_agent.default_timeout'),
+            null,
         );
 
-        $process->run();
+        $process->start();
+        $pid = (int) $process->getPid();
+        $jobId = 'jira-batch-'.now()->format('Ymd-His');
 
-        File::put($batchLog, $process->getOutput()."\n".$process->getErrorOutput());
-
-        if (! $process->isSuccessful() && ! File::exists($batchJson)) {
-            $message = trim($process->getErrorOutput() ?: $process->getOutput());
-            $this->recordSchedulerRun([
-                'last_run_at' => now()->toIso8601String(),
-                'last_triggered_by' => $triggeredBy,
-                'last_success' => false,
-                'last_error' => $message,
-                'running' => false,
-            ]);
-            throw new \RuntimeException('Jira batch failed: '.$message);
-        }
-
-        $stats = ['pr_created' => 0, 'failed' => 0, 'skipped' => 0, 'total' => 0];
-
-        if (File::exists($batchJson)) {
-            $stats = $this->syncTasksFromBatchJson($batchJson, $repoPath, $batchLog);
-        }
-
-        $result = array_merge($stats, [
-            'exit_code' => $process->getExitCode() ?? 1,
-            'batch_log' => $batchLog,
+        $this->jobTracker->register($jobId, $pid, [
+            'type' => 'jira_batch',
+            'triggered_by' => $triggeredBy,
             'batch_json' => $batchJson,
+            'batch_log' => $batchLog,
             'repo_path' => $repoPath,
         ]);
 
         $this->recordSchedulerRun([
             'last_run_at' => now()->toIso8601String(),
             'last_triggered_by' => $triggeredBy,
-            'last_success' => ($result['exit_code'] ?? 1) === 0 || ($result['failed'] ?? 0) === 0,
-            'last_stats' => $stats,
+            'last_success' => null,
+            'last_stats' => null,
             'last_error' => null,
-            'running' => false,
+            'running' => true,
             'batch_log' => $batchLog,
+            'batch_json' => $batchJson,
+            'background_job_id' => $jobId,
+            'background_pid' => $pid,
         ]);
 
-        return $result;
+        $started = [
+            'running' => true,
+            'background_job_id' => $jobId,
+            'background_pid' => $pid,
+            'batch_log' => $batchLog,
+            'batch_json' => $batchJson,
+            'repo_path' => $repoPath,
+            'pr_created' => 0,
+            'failed' => 0,
+            'skipped' => 0,
+            'total' => 0,
+        ];
+
+        if ($waitForCompletion) {
+            return $this->waitForJob($jobId, (int) config('ai_agent.default_timeout', 3600));
+        }
+
+        return $started;
     }
 
     /**
-     * Clone or pull the GitHub repo before a batch (uses Python + root .env).
+     * @return array<string, mixed>
      */
-    public function ensureRepositorySynced(?string $repoPath = null): string
+    public function waitForJob(string $jobId, int $timeoutSeconds = 3600): array
     {
-        if (! config('ai_agent.auto_sync_repo', true)) {
-            $repoPath = $repoPath ?: AiAgentPaths::workspaceRepo();
-            if (! is_dir($repoPath)) {
-                throw new \RuntimeException(
-                    'Workspace repo not found at '. $repoPath
-                    .'. Set GITHUB_OWNER and GITHUB_REPO in Python .env, or enable AI_AGENT_AUTO_SYNC_REPO.'
-                );
+        $deadline = time() + $timeoutSeconds;
+
+        while (time() < $deadline) {
+            $this->tickBackgroundJobs();
+
+            $scheduler = $this->getSchedulerState();
+            if (! ($scheduler['running'] ?? false)) {
+                return array_merge([
+                    'running' => false,
+                    'exit_code' => ($scheduler['last_success'] ?? false) ? 0 : 1,
+                ], $scheduler['last_stats'] ?? [
+                    'pr_created' => 0,
+                    'failed' => 0,
+                    'skipped' => 0,
+                    'total' => 0,
+                ]);
             }
 
-            return $repoPath;
+            usleep(500_000);
         }
 
-        $python = config('ai_agent.python_path');
-        $script = rtrim(config('ai_agent.project_path'), '/').'/scripts/sync_repo.py';
-        $command = [$python, $script];
-        if ($repoPath) {
-            $command[] = '--repo='.$repoPath;
+        throw new \RuntimeException('Timed out waiting for agent job '.$jobId);
+    }
+
+    public function clearStaleSchedulerState(): void
+    {
+        $state = $this->getSchedulerState();
+        if (! ($state['running'] ?? false)) {
+            return;
         }
 
-        $process = new Process(
-            $command,
-            config('ai_agent.project_path'),
-            null,
-            null,
-            600,
-        );
-        $process->run();
-
-        if (! $process->isSuccessful()) {
-            throw new \RuntimeException(
-                'Repository sync failed: '.trim($process->getErrorOutput() ?: $process->getOutput())
-            );
+        foreach ($this->jobTracker->activeJobs() as $job) {
+            if ($this->jobTracker->isPidRunning((int) ($job['pid'] ?? 0))) {
+                return;
+            }
         }
 
-        $path = trim($process->getOutput());
-        if ($path === '' || ! is_dir($path)) {
-            throw new \RuntimeException('Repository sync did not return a valid path.');
+        $this->recordSchedulerRun(array_merge($state, [
+            'running' => false,
+            'last_error' => $state['last_error'] ?? 'Run ended (process no longer active)',
+        ]));
+    }
+
+    public function tickBackgroundJobs(): void
+    {
+        $this->clearStaleSchedulerState();
+
+        foreach ($this->jobTracker->activeJobs() as $job) {
+            $pid = (int) ($job['pid'] ?? 0);
+            if ($this->jobTracker->isPidRunning($pid)) {
+                continue;
+            }
+
+            $jobId = (string) ($job['job_id'] ?? '');
+            $type = (string) ($job['type'] ?? '');
+
+            if ($type === 'jira_batch') {
+                $this->finalizeJiraBatchJob($job);
+            } elseif ($type === 'single_task') {
+                $this->finalizeSingleTaskJob($job);
+            }
+
+            if ($jobId !== '') {
+                $this->jobTracker->remove($jobId);
+            }
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $job
+     */
+    private function finalizeJiraBatchJob(array $job): void
+    {
+        $batchJson = (string) ($job['batch_json'] ?? '');
+        $batchLog = (string) ($job['batch_log'] ?? '');
+        $repoPath = (string) ($job['repo_path'] ?? '');
+        $triggeredBy = (string) ($job['triggered_by'] ?? 'manual');
+
+        $stats = ['pr_created' => 0, 'failed' => 0, 'skipped' => 0, 'total' => 0];
+        $error = null;
+
+        if ($batchJson !== '' && File::exists($batchJson)) {
+            $stats = $this->syncTasksFromBatchJson($batchJson, $repoPath, $batchLog);
+        } elseif ($batchLog !== '' && File::exists($batchLog)) {
+            $error = 'Batch finished without result JSON. See batch log.';
+        } else {
+            $error = 'Batch process ended without output.';
         }
 
-        return $path;
+        $this->pipelineSync->syncAllProgressFiles();
+
+        $this->recordSchedulerRun([
+            'last_run_at' => now()->toIso8601String(),
+            'last_triggered_by' => $triggeredBy,
+            'last_success' => $error === null && ($stats['failed'] ?? 0) === 0,
+            'last_stats' => $stats,
+            'last_error' => $error,
+            'running' => false,
+            'batch_log' => $batchLog ?: null,
+        ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $job
+     */
+    private function finalizeSingleTaskJob(array $job): void
+    {
+        $taskId = (int) ($job['task_id'] ?? 0);
+        $summaryPath = (string) ($job['summary_path'] ?? '');
+        $logFile = (string) ($job['log_file'] ?? '');
+
+        $task = AiAgentTask::query()->find($taskId);
+        if (! $task) {
+            return;
+        }
+
+        $progressPath = (string) ($job['progress_path'] ?? '');
+        if ($progressPath !== '' && File::exists($progressPath)) {
+            $this->pipelineSync->syncProgressFile($progressPath);
+            $task->refresh();
+        }
+
+        $this->processService->finalizeFromSummary($task, $summaryPath, $logFile);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function pipelinePayload(AiAgentTask $task): array
+    {
+        $phase = $task->pipelinePhaseEnum();
+
+        return [
+            'id' => $task->id,
+            'jira_issue_key' => $task->jira_issue_key,
+            'status' => $task->status->value,
+            'status_label' => $task->status->label(),
+            'pipeline_phase' => $phase->value,
+            'pipeline_label' => $task->displayPipelineLabel(),
+            'pipeline_percent' => (int) ($task->pipeline_percent ?? 0),
+            'pipeline_step' => (int) ($task->pipeline_step ?? 0),
+            'pipeline_step_total' => (int) ($task->pipeline_step_total ?? 9),
+            'pipeline_terminal' => (bool) $task->pipeline_terminal,
+            'pipeline_active' => $task->isPipelineActive(),
+            'pipeline_badge_color' => $task->isPipelineActive()
+                ? $phase->badgeColorActive()
+                : $phase->badgeColor(),
+            'pipeline_history' => $task->pipeline_history ?? [],
+            'pipeline_updated_at' => $task->pipeline_updated_at?->toIso8601String(),
+            'error_message' => $task->error_message,
+            'pr_url' => $task->pr_url,
+        ];
+    }
+
+    public function ensureRepositorySynced(?string $repoPath = null): string
+    {
+        return $this->repositoryService->ensureSynced($repoPath);
     }
 
     /**
@@ -198,6 +324,8 @@ class AiAgentBatchService
             '--max-tasks='.(string) config('ai_agent.jira_batch_max_tasks', 1),
             '--batch-json',
             $batchJson,
+            '--progress-dir',
+            $this->pipelineSync->progressDirectory(),
         ];
     }
 
@@ -230,6 +358,9 @@ class AiAgentBatchService
                 $stats['failed']++;
             }
 
+            $pipelinePhase = AiAgentPipelinePhase::tryFrom($item['pipeline_phase'] ?? '')
+                ?? $this->mapBatchToPipeline($batchStatus);
+
             $task = AiAgentTask::updateOrCreate(
                 ['jira_issue_key' => $key],
                 [
@@ -240,6 +371,11 @@ class AiAgentBatchService
                     'branch_name' => $item['branch_name'] ?? "ai-fix/{$key}",
                     'task_description' => '['.$key.'] '.($item['summary'] ?? 'Jira ai-fix task'),
                     'status' => $status,
+                    'pipeline_phase' => $pipelinePhase->value,
+                    'pipeline_label' => $item['pipeline_label'] ?? $pipelinePhase->label(),
+                    'pipeline_percent' => (int) ($item['pipeline_percent'] ?? ($pipelinePhase === AiAgentPipelinePhase::Completed ? 100 : 0)),
+                    'pipeline_terminal' => $pipelinePhase->isTerminal(),
+                    'pipeline_updated_at' => now(),
                     'validation_status' => $item['validation_status'] ?? null,
                     'pr_url' => $item['pr_url'] ?? null,
                     'pr_number' => $item['pr_number'] ?? null,
@@ -279,6 +415,16 @@ class AiAgentBatchService
             'failed' => AiAgentTaskStatus::Failed,
             'dry_run' => AiAgentTaskStatus::Queued,
             default => AiAgentTaskStatus::Failed,
+        };
+    }
+
+    private function mapBatchToPipeline(string $batchStatus): AiAgentPipelinePhase
+    {
+        return match ($batchStatus) {
+            'pr_created' => AiAgentPipelinePhase::Completed,
+            'skipped' => AiAgentPipelinePhase::Skipped,
+            'failed' => AiAgentPipelinePhase::Failed,
+            default => AiAgentPipelinePhase::Failed,
         };
     }
 }

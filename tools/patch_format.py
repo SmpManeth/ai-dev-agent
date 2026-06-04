@@ -9,6 +9,9 @@ from tools.patch_guard import extract_diff_paths
 
 _HUNK_SHORT = re.compile(r"^@@\s+-(\d+)\s+\+(\d+)\s*@@?$")
 _HUNK_BROKEN = re.compile(r"^@@\s+-(\d+)\s+\+(\d+)$")
+_HUNK_HEADER = re.compile(
+    r"^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@(.*)$"
+)
 
 
 def fix_hunk_body_prefixes(diff: str) -> str:
@@ -86,7 +89,63 @@ def normalize_unified_diff(diff: str) -> str:
 
         lines.append(line)
 
-    return fix_hunk_body_prefixes("\n".join(lines) + ("\n" if lines else ""))
+    text = fix_hunk_body_prefixes("\n".join(lines) + ("\n" if lines else ""))
+    return recount_hunk_headers(text)
+
+
+def recount_hunk_headers(diff: str) -> str:
+    """
+    Recompute @@ old,len +new,len @@ from actual hunk body lines.
+
+    LLMs often declare the wrong addition count (e.g. +72 vs 66 real lines),
+    which makes git report "corrupt patch at line N".
+    """
+    if not diff.strip():
+        return diff
+
+    lines = diff.splitlines()
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        match = _HUNK_HEADER.match(line) if line.startswith("@@") else None
+        if not match:
+            out.append(line)
+            i += 1
+            continue
+
+        old_start, _, new_start, _, suffix = match.groups()
+        i += 1
+        body: list[str] = []
+        while i < len(lines) and not lines[i].startswith("@@"):
+            if lines[i].startswith("---") and body:
+                break
+            body.append(lines[i])
+            i += 1
+
+        old_count = 0
+        new_count = 0
+        for bl in body:
+            if bl.startswith("---") or bl.startswith("+++"):
+                continue
+            if bl.startswith("-"):
+                old_count += 1
+            elif bl.startswith("+"):
+                new_count += 1
+            elif bl.startswith(" "):
+                old_count += 1
+                new_count += 1
+
+        suffix_part = suffix or ""
+        if suffix_part and not suffix_part.startswith(" "):
+            suffix_part = " " + suffix_part.lstrip()
+        out.append(
+            f"@@ -{old_start},{old_count} +{new_start},{new_count} @@{suffix_part}"
+        )
+        out.extend(body)
+
+    result = "\n".join(out)
+    return result + ("\n" if result else "")
 
 
 def build_single_hunk_diff(path: str, old_line: str, new_line: str) -> str:
@@ -162,9 +221,27 @@ def fix_dev_null_headers(diff: str, repo_root: Path) -> str:
     return "\n".join(out) + ("\n" if out else "")
 
 
+def strip_ab_path_prefixes(diff: str) -> str:
+    """Use repo-relative paths (resources/foo) instead of a/ b/ prefixes for git apply -p0."""
+    lines: list[str] = []
+    for line in diff.splitlines():
+        if line.startswith("--- a/"):
+            lines.append("--- " + line[6:])
+        elif line.startswith("+++ b/"):
+            lines.append("+++ " + line[6:])
+        elif line.startswith("--- b/"):
+            lines.append("--- " + line[6:])
+        elif line.startswith("+++ a/"):
+            lines.append("+++ " + line[6:])
+        else:
+            lines.append(line)
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
 def prepare_patch_for_apply(diff: str, repo_root: Path) -> str:
     """Normalize and repair a patch against the current repository tree."""
     prepared = normalize_unified_diff(diff)
+    prepared = strip_ab_path_prefixes(prepared)
     prepared = fix_dev_null_headers(prepared, repo_root)
     files_read: dict[str, str] = {}
     for path in extract_diff_paths(prepared):

@@ -6,9 +6,8 @@ import re
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
-
 from config import get_settings, load_prompt
+from tools.llm_factory import build_agent_llm
 from models.state import AgentState, PlannerResult, ResearchResult
 from tools.file_tool import FileTool
 from tools.search_tool import SearchTool
@@ -29,17 +28,6 @@ class ResearcherAgent:
         self._file_tool = FileTool(repo_path)
         self._search_tool = SearchTool(repo_path)
         self._settings = get_settings()
-
-    def _build_llm(self) -> ChatOpenAI:
-        if not self._settings.has_llm:
-            raise RuntimeError(
-                "OPENAI_API_KEY is required. Set it in the environment or .env file."
-            )
-        return ChatOpenAI(
-            model=self._settings.openai_model,
-            api_key=self._settings.openai_api_key,
-            temperature=0.1,
-        )
 
     def _read_planned_files(self, paths: list[str]) -> dict[str, str]:
         contents: dict[str, str] = {}
@@ -112,7 +100,7 @@ class ResearcherAgent:
 Respond with JSON: suspected_root_cause, evidence, recommended_fix, confidence (0-100).
 """
 
-        llm = self._build_llm()
+        llm = build_agent_llm("researcher", self._settings)
         structured = llm.with_structured_output(ResearchResult)
         result: ResearchResult = structured.invoke(
             [

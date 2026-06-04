@@ -84,7 +84,10 @@ Patches are skipped when research confidence is below 60%, risk is `high`, or pa
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OPENAI_API_KEY` | — | Required for LLM agents |
-| `OPENAI_MODEL` | `gpt-4o-mini` | Chat model |
+| `OPENAI_MODEL` | `gpt-5.3-codex` | Default chat model (all agents) |
+| `OPENAI_MODEL_PLANNER` | — | Optional override for planner |
+| `OPENAI_MODEL_RESEARCHER` | — | Optional override for researcher |
+| `OPENAI_MODEL_PATCHER` | — | Optional override for patcher (coding) |
 | `MAX_FILE_READ_BYTES` | `100000` | Per-file read cap |
 | `MAX_FILES_TO_LIST` | `500` | Listing cap |
 | `MAX_SEARCH_RESULTS` | `50` | Search hit cap |

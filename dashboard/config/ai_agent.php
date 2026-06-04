@@ -11,6 +11,8 @@ return [
     'github_repo' => env('GITHUB_REPO', ''),
     'auto_sync_repo' => env('AI_AGENT_AUTO_SYNC_REPO', true),
     'default_timeout' => (int) env('AI_AGENT_TIMEOUT', 7200),
+    /** Mark pipeline "running" as stopped if no progress update for this many seconds. */
+    'pipeline_stale_seconds' => (int) env('AI_AGENT_PIPELINE_STALE_SECONDS', 120),
     'jira_batch_max_tasks' => (int) env('AI_AGENT_JIRA_BATCH_MAX_TASKS', 1),
     'schedule_enabled' => env('AI_AGENT_SCHEDULE_ENABLED', true),
     'schedule_interval_minutes' => (int) env('AI_AGENT_SCHEDULE_INTERVAL_MINUTES', 15),

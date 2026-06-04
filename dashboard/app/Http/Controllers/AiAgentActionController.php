@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Enums\AiAgentTaskStatus;
 use App\Models\AiAgentTask;
 use App\Services\AiAgentLogService;
+use App\Services\AiAgentPipelineSyncService;
 use App\Services\AiAgentProcessService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -14,7 +15,16 @@ class AiAgentActionController extends Controller
     public function __construct(
         private readonly AiAgentProcessService $processService,
         private readonly AiAgentLogService $logService,
+        private readonly AiAgentPipelineSyncService $pipelineSync,
     ) {}
+
+    public function stop(AiAgentTask $task): RedirectResponse
+    {
+        $this->pipelineSync->markTaskStopped($task);
+        $this->logService->log($task, 'Task marked as stopped from dashboard', 'warning', 'control');
+
+        return back()->with('success', 'Task marked as stopped.');
+    }
 
     public function approve(AiAgentTask $task): RedirectResponse
     {
@@ -75,13 +85,9 @@ class AiAgentActionController extends Controller
                 return back()->with('error', 'High-risk tasks must be approved before running.');
             }
 
-            $exitCode = $this->processService->run($task);
+            $this->processService->run($task);
 
-            if ($exitCode !== 0) {
-                return back()->with('error', 'Agent finished with errors. See logs.');
-            }
-
-            return back()->with('success', 'Agent run completed successfully.');
+            return back()->with('success', 'Agent started. Watch the pipeline progress below.');
         } catch (\Throwable $e) {
             $this->logService->log($task, $e->getMessage(), 'error', 'run');
             $task->update([

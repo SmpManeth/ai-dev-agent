@@ -10,6 +10,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
+from tools.agent_console import log_detail, log_step
+from tools.subprocess_log import run_logged
+
 ProjectType = Literal[
     "laravel",
     "php",
@@ -128,15 +131,14 @@ def _run_composer_install(root: Path, *, timeout: int) -> tuple[int, str]:
     logs: list[str] = []
     last_code = 2
     _prepare_composer_for_install(root)
+    log_step("Running composer install (may take several minutes)…", style="cyan")
     for argv in _composer_install_attempts():
-        result = subprocess.run(
+        result = run_logged(
             argv,
             cwd=root,
-            capture_output=True,
-            text=True,
             timeout=timeout,
-            check=False,
             env=os.environ.copy(),
+            echo_command=True,
         )
         block = [
             f"$ {' '.join(argv)}",
@@ -335,13 +337,11 @@ def ensure_project_dependencies(
 
     if (root / "package.json").is_file() and not _node_modules_ready(root):
         logs.append("Running npm install (node_modules/ missing) …")
-        result = subprocess.run(
+        log_step("Running npm install…", style="cyan")
+        result = run_logged(
             ["npm", "install", "--no-audit", "--no-fund"],
             cwd=root,
-            capture_output=True,
-            text=True,
             timeout=timeout,
-            check=False,
         )
         block = [
             "$ npm install --no-audit --no-fund",
@@ -425,19 +425,20 @@ def _run_command(
     timeout: int = 300,
 ) -> ValidationRunResult:
     argv = argv or _php_argv_with_quiet_deprecations(list(cmd.argv))
+    log_step(f"Running tests: {cmd.label}…", style="cyan")
     try:
-        completed = subprocess.run(
+        completed = run_logged(
             argv,
             cwd=repo_root,
-            capture_output=True,
-            text=True,
             timeout=timeout,
-            check=False,
             env=_validation_subprocess_env(),
+            echo_command=True,
         )
         stdout = completed.stdout or ""
         stderr = completed.stderr or ""
         passed = completed.returncode == 0
+        if passed:
+            log_detail(f"  ✓ {cmd.label} passed (exit 0)")
         return ValidationRunResult(
             command=cmd,
             exit_code=completed.returncode,
@@ -476,6 +477,7 @@ def run_validation(
     """
     root = Path(repo_path).resolve()
     project_type = detect_project_type(root)
+    log_step(f"Validating project ({project_type})…", style="bold cyan")
 
     dep_ok, dep_log = ensure_project_dependencies(root)
     prefix_output = dep_log

@@ -16,6 +16,8 @@ from agents.researcher import researcher_node
 from agents.self_fix import self_fix_node
 from agents.test_runner import test_runner_node
 from models.state import AgentState, GraphState
+from tools.pipeline_progress import PipelinePhase, PipelineProgressReporter
+from workflows.progress_wrapper import with_pipeline_progress
 
 
 def _patch_was_applied(state: dict[str, Any]) -> bool:
@@ -76,15 +78,15 @@ def build_bug_fix_graph() -> Any:
         → [test_runner ↔ self_fix]         → [git_committer] → [github_pr] → [jira_updater] → END
     """
     graph = StateGraph(GraphState)
-    graph.add_node("planner", planner_node)
-    graph.add_node("researcher", researcher_node)
-    graph.add_node("patcher", patcher_node)
-    graph.add_node("patch_applier", patch_applier_node)
-    graph.add_node("test_runner", test_runner_node)
-    graph.add_node("self_fix", self_fix_node)
-    graph.add_node("git_committer", git_committer_node)
-    graph.add_node("github_pr", github_pr_node)
-    graph.add_node("jira_updater", jira_updater_node)
+    graph.add_node("planner", with_pipeline_progress("planner", planner_node))
+    graph.add_node("researcher", with_pipeline_progress("researcher", researcher_node))
+    graph.add_node("patcher", with_pipeline_progress("patcher", patcher_node))
+    graph.add_node("patch_applier", with_pipeline_progress("patch_applier", patch_applier_node))
+    graph.add_node("test_runner", with_pipeline_progress("test_runner", test_runner_node))
+    graph.add_node("self_fix", with_pipeline_progress("self_fix", self_fix_node))
+    graph.add_node("git_committer", with_pipeline_progress("git_committer", git_committer_node))
+    graph.add_node("github_pr", with_pipeline_progress("github_pr", github_pr_node))
+    graph.add_node("jira_updater", with_pipeline_progress("jira_updater", jira_updater_node))
 
     graph.add_edge(START, "planner")
     graph.add_edge("planner", "researcher")
@@ -145,8 +147,18 @@ def run_bug_fix_workflow(
     jira_issue_key: str = "",
     jira_summary: str = "",
     jira_description: str = "",
+    progress_json_path: str = "",
 ) -> AgentState:
     """Run the full workflow and return final AgentState."""
+    reporter: PipelineProgressReporter | None = None
+    if progress_json_path:
+        reporter = PipelineProgressReporter(
+            progress_json_path,
+            issue_key=jira_issue_key,
+            jira_summary=jira_summary,
+        )
+        reporter.write(PipelinePhase.QUEUED)
+
     initial = AgentState(
         repo_path=str(repo_path),
         task_description=task_description,
@@ -159,9 +171,45 @@ def run_bug_fix_workflow(
         jira_issue_key=jira_issue_key,
         jira_summary=jira_summary,
         jira_description=jira_description,
+        progress_json_path=progress_json_path,
         current_step="started",
         max_retries=3,
     )
     app = build_bug_fix_graph()
-    final_dict = app.invoke(initial.to_graph_dict())
-    return AgentState.from_graph_dict(final_dict)
+    try:
+        final_dict = app.invoke(initial.to_graph_dict())
+        final = AgentState.from_graph_dict(final_dict)
+        if reporter:
+            if _is_success_state(final):
+                reporter.complete_success(final.to_graph_dict())
+            else:
+                err = _failure_message(final)
+                reporter.complete_failed(err, final.to_graph_dict())
+        return final
+    except Exception as exc:
+        if reporter:
+            reporter.complete_failed(str(exc))
+        raise
+
+
+def _is_success_state(state: AgentState) -> bool:
+    if state.pr_status in ("created", "exists") and state.pr_url:
+        return True
+    if state.update_jira and state.jira_update_status == "updated":
+        return True
+    if state.commit_status == "committed" and not state.create_pr:
+        return True
+    if state.patch_applied and not state.do_commit:
+        return True
+    return False
+
+
+def _failure_message(state: AgentState) -> str:
+    return (
+        state.patch_apply_error
+        or state.commit_error
+        or state.pr_error
+        or state.jira_error
+        or (state.validation_output or "")[:500]
+        or f"Workflow ended at {state.current_step}"
+    )

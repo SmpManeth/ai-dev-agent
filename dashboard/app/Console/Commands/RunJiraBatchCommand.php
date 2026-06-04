@@ -24,7 +24,7 @@ class RunJiraBatchCommand extends Command
         $this->info('Starting Jira ai-fix batch at '.now()->toDateTimeString());
 
         try {
-            $result = $batchService->runJiraBatch($this->option('repo'), 'schedule');
+            $result = $batchService->runJiraBatch($this->option('repo'), 'schedule', waitForCompletion: true);
             $repo = $result['repo_path'] ?? 'synced';
             $this->line("Repo: {$repo}");
         } catch (\Throwable $e) {
