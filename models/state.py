@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict
 
 from pydantic import BaseModel, Field
+
+RiskLevel = Literal["low", "medium", "high"]
 
 
 class PlannerResult(BaseModel):
@@ -40,12 +42,22 @@ class ResearchResult(BaseModel):
     )
 
 
-class ProposedChange(BaseModel):
-    """A suggested code change (read/plan phase only — not applied)."""
+class PatchResult(BaseModel):
+    """Structured output from the patch proposal agent."""
 
-    file_path: str
-    description: str
-    rationale: str
+    proposed_changes: str = Field(
+        description="Narrative description of what the patch changes"
+    )
+    affected_files: list[str] = Field(
+        default_factory=list,
+        description="Repository-relative paths touched by the diff",
+    )
+    risk_level: RiskLevel = Field(description="low, medium, or high")
+    patch_summary: str = Field(description="Short summary of the proposed patch")
+    unified_diff: str = Field(
+        default="",
+        description="Unified diff text (empty when patch not generated)",
+    )
 
 
 class AgentState(BaseModel):
@@ -59,16 +71,24 @@ class AgentState(BaseModel):
 
     plan: list[str] = Field(default_factory=list)
     reasoning: str = ""
-    proposed_changes: list[ProposedChange] = Field(default_factory=list)
 
     current_step: str = "initialized"
 
-    # Enriched artifacts
+    # Enriched artifacts (Step 1)
     repo_summary: str = ""
     repo_summary_display: str = ""
     planner_result: PlannerResult | None = None
     research_result: ResearchResult | None = None
     understanding: str = ""
+
+    # Step 2 — patch proposal (not applied to repo)
+    proposed_changes: str = ""
+    affected_files: list[str] = Field(default_factory=list)
+    risk_level: RiskLevel = "high"
+    patch_summary: str = ""
+    unified_diff: str = ""
+    patch_file_path: str = ""
+    patch_result: PatchResult | None = None
 
     def to_graph_dict(self) -> dict[str, Any]:
         """Serialize for LangGraph invocation."""
@@ -89,10 +109,16 @@ class GraphState(TypedDict, total=False):
     files_read: dict[str, str]
     plan: list[str]
     reasoning: str
-    proposed_changes: list[dict[str, str]]
     current_step: str
     repo_summary: str
     repo_summary_display: str
     planner_result: dict[str, Any] | None
     research_result: dict[str, Any] | None
     understanding: str
+    proposed_changes: str
+    affected_files: list[str]
+    risk_level: str
+    patch_summary: str
+    unified_diff: str
+    patch_file_path: str
+    patch_result: dict[str, Any] | None

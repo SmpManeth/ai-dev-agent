@@ -17,16 +17,22 @@ uv run python main.py \
 ## Architecture
 
 ```
-START → Planner → Researcher → END
+START → Planner → Researcher → Patcher → END
 ```
 
 - **Planner**: git summary, file listing, keyword search → investigation plan
-- **Researcher**: reads planned files → root cause + recommended fix
-- **Tools**: `FileTool`, `SearchTool`, `GitTool` (all read-only)
+- **Researcher**: reads planned files → root cause + recommended fix + confidence
+- **Patcher**: generates a proposed unified diff → saves to `outputs/` (does not modify the target repo)
+- **Tools**: `FileTool`, `SearchTool`, `GitTool` (all read-only on the target repository)
 
-No file writes, patches, commits, or test execution in this phase.
+The target repository is never modified. Patch artifacts are written under `ai-dev-agent/outputs/`:
 
-Step 1 prints a plain-text **AI CODING AGENT REPORT** with task context, files investigated, root cause, recommended fix, confidence, and status `READY FOR PATCH GENERATION` when analysis is strong enough to proceed to patching (a future phase).
+| File | Description |
+|------|-------------|
+| `outputs/latest.patch` | Unified diff proposal |
+| `outputs/latest_summary.md` | Human-readable patch summary |
+
+Patches are skipped when research confidence is below 60%, risk is `high`, or paths touch forbidden areas (auth, payment, `.env`, migrations, etc.).
 
 ## Environment
 

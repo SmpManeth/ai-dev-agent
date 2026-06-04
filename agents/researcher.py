@@ -9,7 +9,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
 from config import get_settings, load_prompt
-from models.state import AgentState, PlannerResult, ProposedChange, ResearchResult
+from models.state import AgentState, PlannerResult, ResearchResult
 from tools.file_tool import FileTool
 from tools.search_tool import SearchTool
 
@@ -121,8 +121,6 @@ Respond with JSON: suspected_root_cause, evidence, recommended_fix, confidence (
             ]
         )
 
-        proposed_changes = _derive_proposed_changes(result, paths)
-
         reasoning_parts = [
             "Researcher completed root-cause analysis.",
             f"Evidence items: {len(result.evidence)}.",
@@ -134,33 +132,8 @@ Respond with JSON: suspected_root_cause, evidence, recommended_fix, confidence (
             "current_step": "researched",
             "files_read": files_read,
             "research_result": result.model_dump(),
-            "proposed_changes": [c.model_dump() for c in proposed_changes],
             "reasoning": full_reasoning,
         }
-
-
-def _derive_proposed_changes(
-    result: ResearchResult, file_paths: list[str]
-) -> list[ProposedChange]:
-    """Map research output to structured proposed changes (suggestions only)."""
-    changes: list[ProposedChange] = []
-    primary = file_paths[0] if file_paths else "unknown"
-    changes.append(
-        ProposedChange(
-            file_path=primary,
-            description=result.recommended_fix[:500],
-            rationale=result.suspected_root_cause[:500],
-        )
-    )
-    for path in file_paths[1:3]:
-        changes.append(
-            ProposedChange(
-                file_path=path,
-                description="Review for related changes per recommended fix",
-                rationale="Listed in planner investigation set",
-            )
-        )
-    return changes
 
 
 def researcher_node(state: dict[str, Any]) -> dict[str, Any]:

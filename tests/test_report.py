@@ -33,7 +33,7 @@ def test_format_step1_report_contains_required_sections() -> None:
     assert "Root Cause:" in report
     assert "Confidence:\n92%" in report
     assert f"Status:\n{STATUS_READY}" in report
-    assert "no files modified" in report.lower()
+    assert "repository not modified" in report.lower()
 
 
 def test_derive_status_low_confidence() -> None:

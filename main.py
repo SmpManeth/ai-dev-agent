@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI entrypoint for the local bug-fix coding agent (read + plan mode)."""
+"""CLI entrypoint for the local bug-fix coding agent."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 from rich.console import Console
 
 from config import get_settings
-from report import format_step1_report
+from report import format_full_report
 from workflows.bug_fix_graph import run_bug_fix_workflow
 
 console = Console()
@@ -18,7 +18,10 @@ console = Console()
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Local AI coding agent — Step 1 bug investigation (read + plan only)",
+        description=(
+            "Local AI coding agent — investigate bugs and propose patches "
+            "(does not modify the target repository)"
+        ),
     )
     parser.add_argument(
         "--repo",
@@ -58,7 +61,10 @@ def main() -> None:
 
     console.print(f"Repository: {repo}", highlight=False)
     console.print(f"Task: {args.task}", highlight=False)
-    console.print("Running Step 1 (read + plan only)...\n", style="dim")
+    console.print(
+        "Running workflow: Planner → Researcher → Patcher...\n",
+        style="dim",
+    )
 
     try:
         final_state = run_bug_fix_workflow(str(repo), args.task)
@@ -66,7 +72,7 @@ def main() -> None:
         console.print(f"[red]Workflow failed:[/red] {exc}")
         sys.exit(1)
 
-    console.print(format_step1_report(final_state), highlight=False)
+    console.print(format_full_report(final_state), highlight=False)
     console.print()
 
 

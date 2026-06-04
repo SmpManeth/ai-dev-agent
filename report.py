@@ -1,4 +1,4 @@
-"""Step 1 plain-text report formatter (read + plan only — no writes)."""
+"""Agent report formatters (investigation + patch proposal)."""
 
 from __future__ import annotations
 
@@ -27,7 +27,6 @@ def _numbered_plan(steps: list[str]) -> str:
 
 
 def _files_investigated(state: AgentState, planner: PlannerResult | None) -> list[str]:
-    """Paths actually read, falling back to planner targets."""
     if state.files_read:
         return list(state.files_read.keys())
     if planner and planner.files_to_investigate:
@@ -36,10 +35,11 @@ def _files_investigated(state: AgentState, planner: PlannerResult | None) -> lis
 
 
 def derive_status(state: AgentState, research: ResearchResult | None) -> str:
-    """Step 1 completion status — never implies patches were applied."""
     if research is None:
         return STATUS_INCOMPLETE
-    if not state.files_read and not (state.planner_result and state.planner_result.files_to_investigate):
+    if not state.files_read and not (
+        state.planner_result and state.planner_result.files_to_investigate
+    ):
         return STATUS_NEEDS_MORE
     if research.confidence >= 60 and research.suspected_root_cause.strip():
         return STATUS_READY
@@ -49,7 +49,7 @@ def derive_status(state: AgentState, research: ResearchResult | None) -> str:
 
 
 def format_step1_report(state: AgentState) -> str:
-    """Build the Step 1 investigation report (no code changes)."""
+    """Build Step 1 investigation report."""
     planner = state.planner_result
     if isinstance(planner, dict):
         planner = PlannerResult.model_validate(planner)
@@ -72,12 +72,8 @@ def format_step1_report(state: AgentState) -> str:
     sections.append(_section("Files Investigated", files_body))
     sections.append("")
 
-    understanding = ""
-    if planner:
-        understanding = planner.understanding
-    elif state.understanding:
-        understanding = state.understanding
-    sections.append(_section("Understanding", understanding))
+    understanding = planner.understanding if planner else state.understanding
+    sections.append(_section("Understanding", understanding or ""))
     sections.append("")
 
     plan_steps = (planner.plan if planner else None) or state.plan
@@ -91,8 +87,7 @@ def format_step1_report(state: AgentState) -> str:
         sections.append("")
         sections.append(f"Confidence:\n{research.confidence}%")
         sections.append("")
-        status = derive_status(state, research)
-        sections.append(f"Status:\n{status}")
+        sections.append(f"Status:\n{derive_status(state, research)}")
     else:
         sections.append(_section("Root Cause", "(analysis not completed)"))
         sections.append("")
@@ -104,7 +99,61 @@ def format_step1_report(state: AgentState) -> str:
 
     sections.append("")
     sections.append("=" * REPORT_WIDTH)
-    sections.append("Mode: READ + PLAN — no files modified, no patches, no commits")
+    sections.append("Step 1 complete — repository not modified")
     sections.append("=" * REPORT_WIDTH)
 
     return "\n".join(sections)
+
+
+def format_patch_section(state: AgentState) -> str:
+    """Build Step 2 patch proposal section."""
+    research = state.research_result
+    if isinstance(research, dict):
+        research = ResearchResult.model_validate(research) if research else None
+
+    sections: list[str] = ["", "=" * REPORT_WIDTH, "PATCH PROPOSAL (Step 2)", "=" * REPORT_WIDTH, ""]
+
+    if research:
+        sections.append(_section("Root Cause", research.suspected_root_cause))
+        sections.append("")
+        sections.append(_section("Recommended Fix", research.recommended_fix))
+        sections.append("")
+
+    affected = state.affected_files or []
+    affected_body = "\n".join(f"- {f}" for f in affected) if affected else "(none)"
+    sections.append(_section("Affected Files", affected_body))
+    sections.append("")
+
+    sections.append(f"Risk Level:\n{state.risk_level or 'high'}")
+    sections.append("")
+    sections.append(_section("Patch Summary", state.patch_summary or "(none)"))
+    sections.append("")
+
+    if state.proposed_changes:
+        sections.append(_section("Proposed Changes", state.proposed_changes))
+        sections.append("")
+
+    patch_path = state.patch_file_path or "(not saved)"
+    sections.append(f"Patch File:\n{patch_path}")
+    sections.append("")
+
+    if state.unified_diff.strip():
+        sections.append("Unified Diff (preview):")
+        preview = state.unified_diff
+        if len(preview) > 2000:
+            preview = preview[:2000] + "\n... [truncated — see patch file] ..."
+        sections.append(preview)
+    else:
+        sections.append("Unified Diff:\n(no patch generated)")
+
+    sections.append("")
+    sections.append("=" * REPORT_WIDTH)
+    sections.append("Step 2 complete — patch NOT applied to repository")
+    sections.append("=" * REPORT_WIDTH)
+
+    return "\n".join(sections)
+
+
+def format_full_report(state: AgentState) -> str:
+    """Full report: Step 1 investigation + Step 2 patch proposal."""
+    return format_step1_report(state) + format_patch_section(state)

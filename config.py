@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     prompts_dir: Path = Field(
         default_factory=lambda: Path(__file__).resolve().parent / "prompts"
     )
+    outputs_dir: Path = Field(
+        default_factory=lambda: Path(__file__).resolve().parent / "outputs"
+    )
 
     @property
     def has_llm(self) -> bool:
@@ -36,6 +39,13 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Return cached settings instance."""
     return Settings()
+
+
+def get_outputs_dir() -> Path:
+    """Directory for generated patch artifacts (not the target repo)."""
+    path = get_settings().outputs_dir
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def load_prompt(name: str) -> str:

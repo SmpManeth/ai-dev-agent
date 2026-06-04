@@ -4,3 +4,5 @@
 __pycache__/
 *.pyc
 .DS_Store
+outputs/latest.patch
+outputs/latest_summary.md

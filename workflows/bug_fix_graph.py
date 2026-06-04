@@ -1,4 +1,4 @@
-"""LangGraph workflow: Planner → Researcher (read/plan phase only)."""
+"""LangGraph workflow: Planner → Researcher → Patcher."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
+from agents.patcher import patcher_node
 from agents.planner import planner_node
 from agents.researcher import researcher_node
 from models.state import AgentState, GraphState
@@ -15,14 +16,16 @@ def build_bug_fix_graph() -> Any:
     """
     Build and compile the bug-fix investigation graph.
 
-    Flow: START → planner → researcher → END
+    Flow: START → planner → researcher → patcher → END
     """
     graph = StateGraph(GraphState)
     graph.add_node("planner", planner_node)
     graph.add_node("researcher", researcher_node)
+    graph.add_node("patcher", patcher_node)
     graph.add_edge(START, "planner")
     graph.add_edge("planner", "researcher")
-    graph.add_edge("researcher", END)
+    graph.add_edge("researcher", "patcher")
+    graph.add_edge("patcher", END)
     return graph.compile()
 
 
