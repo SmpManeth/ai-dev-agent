@@ -118,6 +118,51 @@ def find_wrong_layer_patch(
     ]
 
 
+def find_removed_lines_missing_from_files(
+    unified_diff: str,
+    files_read: dict[str, str],
+) -> list[str]:
+    """Warn when minus lines are absent from disk (LLM guessed wrong hunk context)."""
+    from tools.patch_align import intent_is_swiper_autoplay
+
+    paths = extract_diff_paths(unified_diff)
+    if len(paths) != 1:
+        return []
+
+    path = paths[0]
+    content = files_read.get(path, "")
+    if not content or content.startswith("(unable to read"):
+        return []
+
+    removed: list[str] = []
+    added: list[str] = []
+    for line in unified_diff.splitlines():
+        if line.startswith("-") and not line.startswith("---"):
+            removed.append(line[1:])
+        elif line.startswith("+") and not line.startswith("+++"):
+            added.append(line[1:])
+
+    nonempty = [r for r in removed if r.strip()]
+    if not nonempty:
+        return []
+
+    if intent_is_swiper_autoplay(removed, added):
+        return []
+
+    missing = [
+        r.strip()[:60]
+        for r in nonempty
+        if r not in content and r.strip() not in content
+    ]
+    if len(missing) >= max(1, len(nonempty) // 2):
+        return [
+            "Diff minus (-) lines do not match the file on disk (wrong line numbers or "
+            f"invented context). Copy exact lines from the provided file excerpt. "
+            f"Examples not found: {missing[:3]}"
+        ]
+    return []
+
+
 def validate_proposed_diff(
     unified_diff: str,
     files_read: dict[str, str],
@@ -136,4 +181,5 @@ def validate_proposed_diff(
             task_description=task_description,
         )
     )
+    errors.extend(find_removed_lines_missing_from_files(unified_diff, files_read))
     return errors

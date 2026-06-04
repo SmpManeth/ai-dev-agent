@@ -12,4 +12,4 @@ Rules:
 7. If "Patch apply failed" appears below, copy minus (-) lines verbatim from the file excerpt — wrong line numbers or whitespace cause git apply to fail
 
 If the verifier said Swiper/autoplay was wrong in app.js, move the fix to the Blade Swiper init block.
-For Swiper autoplay: edit the existing `new Swiper(...)` block (add `loop: true` and `autoplay: { delay: 7000, disableOnInteraction: false }` after `loop: false`) — do not add a second Swiper instance.
+For Swiper autoplay: edit the existing `new Swiper(...)` block at the end of the Blade file (add `loop: true` and `autoplay: { delay: 7000, disableOnInteraction: false }` near `loop: false`) — do not patch unrelated HTML at the top of the file; minus lines must match the excerpt exactly.

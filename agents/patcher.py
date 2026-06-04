@@ -19,6 +19,7 @@ from tools.patch_guard import (
 from tools.diff_guard import validate_proposed_diff
 from tools.file_excerpt import excerpt_for_patch
 from tools.file_tool import FileTool
+from tools.patch_align import realign_diff_fuzzy
 from tools.patch_format import repair_diff_if_needed
 from tools.patch_output import write_patch_artifacts
 
@@ -239,10 +240,11 @@ Respond with JSON: proposed_changes, affected_files, risk_level, patch_summary, 
 
         result.risk_level = normalize_risk_level(str(result.risk_level))
         raw_diff = _strip_markdown_fences(result.unified_diff)
-        result.unified_diff = repair_diff_if_needed(
-            raw_diff,
-            _disk_files_for_repair(state.repo_path, raw_diff, state.files_read),
+        disk_files = _disk_files_for_repair(
+            state.repo_path, raw_diff, state.files_read
         )
+        result.unified_diff = repair_diff_if_needed(raw_diff, disk_files)
+        result.unified_diff = realign_diff_fuzzy(result.unified_diff, disk_files)
 
         guard_errors = validate_proposed_diff(
             result.unified_diff,

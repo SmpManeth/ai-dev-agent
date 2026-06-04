@@ -22,7 +22,8 @@ PATCH RULES
 
 LARAVEL / FRONTEND
 - Page-specific UI → edit the .blade.php (or its inline script) that contains the visible text
-- Swiper bug → add/adjust autoplay, loop, navigation in the existing new Swiper({...}) block
+- Swiper bug → add/adjust autoplay, loop, navigation in the existing new Swiper({...}) block at the BOTTOM of that Blade file (search the excerpt for `new Swiper` — do NOT patch hero/search HTML near the top)
+- Every minus (-) line in unified_diff must be copied VERBATIM from the provided file excerpt; @@ line numbers are often wrong
 - Do NOT add getElementById/querySelector for ids that are not in the provided sources
 - Do NOT add parallel setInterval/scrollTo autoplay when Swiper already exists
 

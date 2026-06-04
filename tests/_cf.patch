@@ -1,0 +1,17 @@
+--- a/resources/views/pages/cruise.blade.php
++++ b/resources/views/pages/cruise.blade.php
+@@ -58,14 +58,5 @@
+  </div>
+  </form>
+
+-{{-- Clear filters --}}
+-@if(($q ?? '') !== '' || ($categoryId ?? null))
+-<div class="mt-3">
+-<a href="{{ route('cruisePage.search') }}"
+-class="inline-flex items-center text-sm text-white/90 underline hover:opacity-80">
+-Clear filters
+-</a>
+-</div>
+-@endif
+  </div>
+  </div>

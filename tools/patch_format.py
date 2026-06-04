@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from tools.patch_align import realign_diff_to_files
+from tools.patch_align import realign_diff_fuzzy
 from tools.patch_guard import extract_diff_paths
 
 _HUNK_SHORT = re.compile(r"^@@\s+-(\d+)\s+\+(\d+)\s*@@?$")
@@ -52,8 +52,8 @@ def fix_hunk_body_prefixes(diff: str) -> str:
                 out.append(line)
                 continue
             if not line:
-                out.append("+")
-                last_was_plus = True
+                out.append(" ")
+                last_was_plus = False
                 continue
             if last_was_plus:
                 out.append(f"+{line}")
@@ -174,11 +174,11 @@ def repair_diff_if_needed(diff: str, files_read: dict[str, str]) -> str:
             added.append(line[1:])
 
     paths = extract_diff_paths(normalized)
-    if len(paths) == 1 and removed and added:
+    if len(paths) == 1 and removed:
         path = paths[0]
         content = files_read.get(path, "")
         if content:
-            if len(removed) == len(added) and all(old in content for old in removed):
+            if added and len(removed) == len(added) and all(old in content for old in removed):
                 parts = [f"--- {path}", f"+++ {path}"]
                 for old, new in zip(removed, added, strict=True):
                     idx = content.find(old)
@@ -190,7 +190,7 @@ def repair_diff_if_needed(diff: str, files_read: dict[str, str]) -> str:
                     parts.append(f"+{new}")
                 if len(parts) > 2:
                     return "\n".join(parts) + "\n"
-            realigned = realign_diff_to_files(normalized, files_read)
+            realigned = realign_diff_fuzzy(normalized, files_read)
             if realigned != normalized:
                 return realigned
 

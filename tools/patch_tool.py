@@ -150,8 +150,10 @@ def validate_patch(
             err_lower = check_err.lower()
             can_fallback = (
                 (len(removed) == len(added) and removed)
+                or (removed and not added)
                 or "already exists" in err_lower
                 or "corrupt patch" in err_lower
+                or "no valid patches" in err_lower
                 or "patch does not apply" in err_lower
                 or "patch failed" in err_lower
                 or (added and not removed)
@@ -229,10 +231,47 @@ def _extract_replacement_lines(diff: str) -> tuple[list[str], list[str]]:
         if line.startswith("---") or line.startswith("+++") or line.startswith("@@"):
             continue
         if line.startswith("-") and not line.startswith("---"):
-            removed.append(line[1:].strip())
+            removed.append(line[1:])
         elif line.startswith("+") and not line.startswith("+++"):
-            added.append(line[1:].strip())
+            added.append(line[1:])
     return removed, added
+
+
+def _apply_block_deletion_fallback(repo_root: Path, diff: str) -> bool:
+    """Delete a contiguous block of lines when the patch is removal-only."""
+    removed, added = _extract_replacement_lines(diff)
+    if not removed or added:
+        return False
+
+    paths = extract_diff_paths(diff)
+    if len(paths) != 1:
+        return False
+
+    target = repo_root / paths[0]
+    if not target.is_file():
+        return False
+
+    text = target.read_text(encoding="utf-8")
+    file_lines = text.splitlines(keepends=True)
+    plain = [ln.rstrip("\n\r") for ln in file_lines]
+
+    from tools.patch_align import find_block_start, find_containing_window
+
+    window = find_containing_window(plain, removed)
+    if window:
+        start, end = window
+    else:
+        start = find_block_start(plain, removed)
+        if start is None:
+            return False
+        end = start + len([r for r in removed if r.strip()])
+
+    merged = file_lines[:start] + file_lines[end:]
+    new_text = "".join(merged)
+    if new_text == text:
+        return False
+    target.write_text(new_text, encoding="utf-8")
+    return True
 
 
 def _apply_block_replacement_fallback(repo_root: Path, diff: str) -> bool:
@@ -413,6 +452,20 @@ def apply_patch(repo_path: str | Path, patch_path: str | Path) -> None:
         _cleanup_orig_files(repo_root)
         return
     errors.append(result.stderr.strip() or result.stdout.strip())
+
+    log_detail("  Trying block-deletion fallback …")
+    if _apply_block_deletion_fallback(repo_root, diff):
+        log_detail("  ✓ Applied via block-deletion fallback")
+        _cleanup_orig_files(repo_root)
+        return
+
+    log_detail("  Trying Swiper autoplay fallback …")
+    from tools.patch_align import apply_swiper_autoplay_fallback
+
+    if apply_swiper_autoplay_fallback(repo_root, diff):
+        log_detail("  ✓ Applied via Swiper autoplay fallback")
+        _cleanup_orig_files(repo_root)
+        return
 
     log_detail("  Trying block-replacement fallback …")
     if _apply_block_replacement_fallback(repo_root, diff):
