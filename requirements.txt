@@ -1,0 +1,12 @@
+langgraph>=0.2.60
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-openai>=0.2.0
+pydantic>=2.0
+pydantic-settings>=2.0
+GitPython>=3.1.40
+rich>=13.7.0
+python-dotenv>=1.0.0
+
+# Dev / test
+pytest>=8.0.0
