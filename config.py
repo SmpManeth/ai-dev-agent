@@ -30,9 +30,36 @@ class Settings(BaseSettings):
         default_factory=lambda: Path(__file__).resolve().parent / "outputs"
     )
 
+    github_token: str | None = Field(default=None, alias="GITHUB_TOKEN")
+    github_owner: str | None = Field(default=None, alias="GITHUB_OWNER")
+    github_repo: str | None = Field(default=None, alias="GITHUB_REPO")
+    github_base_branch: str = Field(default="main", alias="GITHUB_BASE_BRANCH")
+
+    workspace_root: Path | None = Field(default=None, alias="AI_AGENT_WORKSPACE_ROOT")
+    auto_sync_repo: bool = Field(default=True, alias="AI_AGENT_AUTO_SYNC_REPO")
+
+    jira_base_url: str | None = Field(default=None, alias="JIRA_BASE_URL")
+    jira_email: str | None = Field(default=None, alias="JIRA_EMAIL")
+    jira_api_token: str | None = Field(default=None, alias="JIRA_API_TOKEN")
+    jira_project_key: str | None = Field(default=None, alias="JIRA_PROJECT_KEY")
+    jira_label: str = Field(default="ai-fix", alias="JIRA_LABEL")
+    jira_in_review_status: str = Field(default="In Review", alias="JIRA_IN_REVIEW_STATUS")
+
     @property
     def has_llm(self) -> bool:
         return bool(self.openai_api_key)
+
+    @property
+    def has_github(self) -> bool:
+        return bool(self.github_token)
+
+    @property
+    def has_jira(self) -> bool:
+        return bool(
+            self.jira_base_url
+            and self.jira_email
+            and self.jira_api_token
+        )
 
 
 @lru_cache

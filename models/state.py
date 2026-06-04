@@ -65,6 +65,17 @@ class AgentState(BaseModel):
 
     repo_path: str
     task_description: str
+    apply_patch: bool = False
+    run_tests: bool = False
+    do_commit: bool = False
+    branch_name: str = ""
+    create_pr: bool = False
+    update_jira: bool = False
+
+    # Jira context (Step 7)
+    jira_issue_key: str = ""
+    jira_summary: str = ""
+    jira_description: str = ""
 
     files_found: list[str] = Field(default_factory=list)
     files_read: dict[str, str] = Field(default_factory=dict)
@@ -90,6 +101,48 @@ class AgentState(BaseModel):
     patch_file_path: str = ""
     patch_result: PatchResult | None = None
 
+    # Step 3 — local apply (no commit)
+    patch_applied: bool = False
+    changed_files: list[str] = Field(default_factory=list)
+    git_diff: str = ""
+    patch_apply_status: str = ""
+    patch_apply_error: str = ""
+    patch_validation_status: str = ""
+
+    # Step 4 — validation + self-fix loop
+    validation_status: str = ""
+    validation_commands: list[str] = Field(default_factory=list)
+    validation_output: str = ""
+    validation_errors: list[str] = Field(default_factory=list)
+    retry_count: int = 0
+    max_retries: int = 3
+    self_fix_history: list[dict[str, Any]] = Field(default_factory=list)
+
+    # Step 5 — local branch + commit (no push)
+    branch_created: bool = False
+    commit_created: bool = False
+    commit_hash: str = ""
+    commit_message: str = ""
+    commit_status: str = ""
+    commit_error: str = ""
+    original_branch: str = ""
+
+    # Step 6 — GitHub push + draft PR (no merge)
+    branch_pushed: bool = False
+    push_status: str = ""
+    push_error: str = ""
+    pr_created: bool = False
+    pr_url: str = ""
+    pr_number: int = 0
+    pr_status: str = ""
+    pr_error: str = ""
+
+    # Step 7 — Jira update after PR
+    jira_comment_added: bool = False
+    jira_transitioned: bool = False
+    jira_update_status: str = ""
+    jira_error: str = ""
+
     def to_graph_dict(self) -> dict[str, Any]:
         """Serialize for LangGraph invocation."""
         return self.model_dump(mode="json")
@@ -105,6 +158,15 @@ class GraphState(TypedDict, total=False):
 
     repo_path: str
     task_description: str
+    apply_patch: bool
+    run_tests: bool
+    do_commit: bool
+    branch_name: str
+    create_pr: bool
+    update_jira: bool
+    jira_issue_key: str
+    jira_summary: str
+    jira_description: str
     files_found: list[str]
     files_read: dict[str, str]
     plan: list[str]
@@ -122,3 +184,35 @@ class GraphState(TypedDict, total=False):
     unified_diff: str
     patch_file_path: str
     patch_result: dict[str, Any] | None
+    patch_applied: bool
+    changed_files: list[str]
+    git_diff: str
+    patch_apply_status: str
+    patch_apply_error: str
+    patch_validation_status: str
+    validation_status: str
+    validation_commands: list[str]
+    validation_output: str
+    validation_errors: list[str]
+    retry_count: int
+    max_retries: int
+    self_fix_history: list[dict[str, Any]]
+    branch_created: bool
+    commit_created: bool
+    commit_hash: str
+    commit_message: str
+    commit_status: str
+    commit_error: str
+    original_branch: str
+    branch_pushed: bool
+    push_status: str
+    push_error: str
+    pr_created: bool
+    pr_url: str
+    pr_number: int
+    pr_status: str
+    pr_error: str
+    jira_comment_added: bool
+    jira_transitioned: bool
+    jira_update_status: str
+    jira_error: str

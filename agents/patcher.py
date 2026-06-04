@@ -17,6 +17,7 @@ from tools.patch_guard import (
     is_forbidden_path,
     normalize_risk_level,
 )
+from tools.patch_format import repair_diff_if_needed
 from tools.patch_output import write_patch_artifacts
 
 CONFIDENCE_MIN_FOR_PATCH = 60
@@ -42,6 +43,21 @@ class PatcherAgent:
 
     def __init__(self) -> None:
         self._settings = get_settings()
+
+    def _validation_feedback_block(self, state: AgentState) -> str:
+        if not state.validation_errors and not state.validation_output:
+            return ""
+        errors = "\n".join(f"- {e}" for e in state.validation_errors) or "(none)"
+        return f"""
+## Validation failures (self-fix retry {state.retry_count})
+The previous patch was reverted. Fix the failures below with the smallest possible change.
+
+### Error summary
+{errors}
+
+### Command output
+{state.validation_output[:8000]}
+"""
 
     def _build_llm(self) -> ChatOpenAI:
         if not self._settings.has_llm:
@@ -169,6 +185,7 @@ class PatcherAgent:
 
 ## Files (original content — diff must only modify these paths)
 {files_text}
+{self._validation_feedback_block(state)}
 
 Respond with JSON: proposed_changes, affected_files, risk_level, patch_summary, unified_diff.
 """
@@ -183,7 +200,10 @@ Respond with JSON: proposed_changes, affected_files, risk_level, patch_summary, 
         )
 
         result.risk_level = normalize_risk_level(str(result.risk_level))
-        result.unified_diff = _strip_markdown_fences(result.unified_diff)
+        result.unified_diff = repair_diff_if_needed(
+            _strip_markdown_fences(result.unified_diff),
+            state.files_read,
+        )
 
         allowed_candidates, blocked = filter_allowed_files(result.affected_files)
         if blocked:

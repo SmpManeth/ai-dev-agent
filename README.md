@@ -17,15 +17,60 @@ uv run python main.py \
 ## Architecture
 
 ```
-START → Planner → Researcher → Patcher → END
+START → Planner → Researcher → Patcher → PatchApplier → [TestRunner ↔ SelfFix] → [GitCommitter] → [GitHubPr] → [JiraUpdater] → END
 ```
 
 - **Planner**: git summary, file listing, keyword search → investigation plan
 - **Researcher**: reads planned files → root cause + recommended fix + confidence
 - **Patcher**: generates a proposed unified diff → saves to `outputs/` (does not modify the target repo)
-- **Tools**: `FileTool`, `SearchTool`, `GitTool` (all read-only on the target repository)
+- **PatchApplier** (optional): validates and applies patch when `--apply-patch` is passed
+- **Tools**: `FileTool`, `SearchTool`, `GitTool`, `PatchTool`
 
-The target repository is never modified. Patch artifacts are written under `ai-dev-agent/outputs/`:
+By default the target repository is not modified. With `--apply-patch`, the patch is applied locally but **not committed or pushed**.
+
+```bash
+python main.py --repo ./test-project --task "Fix username validation message" --apply-patch
+python main.py --repo ./test-project --task "Fix username validation message" --apply-patch --run-tests
+python main.py --repo ./test-project --revert-patch   # undo uncommitted apply
+```
+
+Step 4 runs validation (pytest, npm, composer, etc.) and up to **3** self-fix retries if tests fail.
+
+```bash
+python main.py --repo ./test-project --task "Fix username validation message" \
+  --apply-patch --run-tests --commit \
+  --branch-name ai-fix/username-validation-message
+```
+
+Step 5 creates a **local branch and commit only** (no push, no PR).
+
+```bash
+python main.py --repo . --task "Fix bug" --apply-patch --run-tests --commit --create-pr
+```
+
+Step 6 pushes the branch and opens a **draft PR** (requires `GITHUB_TOKEN` in `.env`). Does not merge or approve.
+
+```bash
+# Primary workflow: auto clone/pull repo + batch Jira ai-fix issues
+python main.py --from-jira \
+  --apply-patch --run-tests --commit --create-pr --max-tasks=1
+
+# Repo is cloned to ./workspaces/{GITHUB_OWNER}/{GITHUB_REPO} when missing,
+# then pulled to GITHUB_BASE_BRANCH before each run (GITHUB_TOKEN in .env).
+
+# Dry run: list issues without modifying files
+python main.py --from-jira --repo /path/to/your-repo --dry-run
+
+# Optional: single issue for testing
+python main.py --jira-issue AI-123 --repo ./test-project \
+  --apply-patch --run-tests --commit --create-pr
+```
+
+Step 7 connects to Jira (`JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_PROJECT_KEY`, `JIRA_LABEL=ai-fix`), processes issues **one by one** (continues on failure), uses branch `ai-fix/{ISSUE-KEY}`, creates **draft PRs only**, comments PR URL on Jira, and moves to **In Review** when available. Skips issues that already have an open PR or existing branch.
+
+Laravel dashboard: see `dashboard/README.md` — control panel with scheduler status, connection checks, and **Run Jira ai-fix Batch Now** (same as `main.py --from-jira`).
+
+Patch artifacts are written under `ai-dev-agent/outputs/`:
 
 | File | Description |
 |------|-------------|

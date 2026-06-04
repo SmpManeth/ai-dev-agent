@@ -3,9 +3,19 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Literal
 
 RiskLevel = Literal["low", "medium", "high"]
+
+# Exact relative paths blocked for patch apply (Step 3)
+_APPLY_FORBIDDEN_EXACT: frozenset[str] = frozenset(
+    {
+        "composer.json",
+        "package.json",
+        "config/database.php",
+    }
+)
 
 # Paths or fragments that must not be patched in Step 2
 _FORBIDDEN_FRAGMENTS: tuple[str, ...] = (
@@ -29,7 +39,7 @@ _FORBIDDEN_FRAGMENTS: tuple[str, ...] = (
     "poetry.lock",
 )
 
-_DIFF_PATH_RE = re.compile(r"^(?:---|\+\+\+)\s+[ab]/?(.+?)(?:\s|$)", re.MULTILINE)
+_DIFF_PATH_RE = re.compile(r"^(?:---|\+\+\+)\s+(?:[ab]/)?(.+?)(?:\s|$)", re.MULTILINE)
 
 
 def _normalize_path(path: str) -> str:
@@ -40,9 +50,43 @@ def _normalize_path(path: str) -> str:
     return normalized.lower()
 
 
+_DOC_SUFFIXES: frozenset[str] = frozenset({".md", ".txt", ".rst", ".adoc"})
+_DOC_BASENAMES: frozenset[str] = frozenset(
+    {
+        "readme",
+        "changelog",
+        "license",
+        "contributing",
+        "authors",
+        "history",
+    }
+)
+
+
+def is_documentation_path(path: str) -> bool:
+    """True for markdown/text docs where large diffs are normal (e.g. README rewrites)."""
+    normalized = _normalize_path(path)
+    name = Path(normalized).name
+    stem = Path(name).stem
+    suffix = Path(name).suffix
+    if suffix in _DOC_SUFFIXES:
+        return True
+    if stem in _DOC_BASENAMES:
+        return True
+    if normalized.startswith("docs/") or "/docs/" in normalized:
+        return True
+    return False
+
+
+def paths_are_documentation_only(paths: list[str]) -> bool:
+    return bool(paths) and all(is_documentation_path(p) for p in paths)
+
+
 def is_forbidden_path(path: str) -> bool:
     """Return True if the path must not be modified."""
     normalized = _normalize_path(path)
+    if normalized in _APPLY_FORBIDDEN_EXACT:
+        return True
     name = normalized.rsplit("/", maxsplit=1)[-1]
 
     if name == ".env" or name.startswith(".env."):
